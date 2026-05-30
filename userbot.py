@@ -17,17 +17,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Debug: print semua environment variable yang ada SESSION
-for k, v in os.environ.items():
-    if "SESSION" in k:
-        logger.info(f"ENV {k} = repr: {repr(v[:30])}... len={len(v)}")
-
 sess = os.getenv("SESSION_STRING_1", "").strip()
-logger.info(f"SESSION_STRING_1 length: {len(sess)}")
-logger.info(f"SESSION_STRING_1 first 10 chars: {repr(sess[:10])}")
-logger.info(f"SESSION_STRING_1 last 10 chars: {repr(sess[-10:])}")
 
-client = TelegramClient(StringSession(sess), API_ID, API_HASH)
+# Fix base64 padding yang mungkin hilang
+missing = len(sess) % 4
+if missing:
+    sess += "=" * (4 - missing)
+
+logger.info(f"SESSION length: {len(sess)}, starts: {sess[:10]!r}, ends: {sess[-10:]!r}")
+
+try:
+    session_obj = StringSession(sess)
+    logger.info("✅ StringSession OK!")
+except Exception as e:
+    logger.error(f"❌ StringSession error: {e}")
+    raise
+
+client = TelegramClient(session_obj, API_ID, API_HASH)
 
 
 async def main():
@@ -39,24 +45,29 @@ async def main():
     @client.on(events.NewMessage(incoming=True))
     async def handler(event):
         text = event.raw_text.strip() if event.raw_text else ""
-        logger.info(f"Pesan: {text!r}")
+        if not text:
+            return
+        logger.info(f"Pesan: {text!r} | chat={event.chat_id}")
+
         if text == ".ping":
             await event.delete()
             sent = await event.respond("🏓 Pong!")
             await asyncio.sleep(5)
             await sent.delete()
+
         elif text == ".jvc":
             await event.delete()
             sent = await event.respond("✅ Berhasil join ke obrolan suara!")
             await asyncio.sleep(3)
             await sent.delete()
+
         elif text == ".leave":
             await event.delete()
             sent = await event.respond("👋 Berhasil keluar dari obrolan suara!")
             await asyncio.sleep(3)
             await sent.delete()
 
-    logger.info("✅ Bot jalan! Siap terima command .ping .jvc .leave")
+    logger.info("✅ Bot jalan! Siap terima .ping .jvc .leave")
     await client.run_until_disconnected()
 
 
