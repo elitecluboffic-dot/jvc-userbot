@@ -4,6 +4,7 @@ import asyncio
 import logging
 from pyrogram import Client, filters, idle
 from pyrogram.types import Message
+from pyrogram.enums import UpdateType
 from pytgcalls import PyTgCalls
 from pytgcalls.types import MediaStream
 
@@ -44,6 +45,8 @@ for idx, sess in enumerate(sessions, start=1):
         api_id=API_ID,
         api_hash=API_HASH,
         session_string=sess,
+        # Aktifkan semua jenis update termasuk pesan sendiri
+        no_updates=False,
     )
     call = PyTgCalls(app)
     apps.append(app)
@@ -53,11 +56,6 @@ for idx, sess in enumerate(sessions, start=1):
 # ─────────────────────────────────────────
 #  Helpers
 # ─────────────────────────────────────────
-def make_filter():
-    """Tangkap semua pesan dari mana aja termasuk pesan sendiri."""
-    return filters.create(lambda _, __, ___: True)
-
-
 async def safe_delete(msg, delay=3):
     await asyncio.sleep(delay)
     try:
@@ -71,59 +69,62 @@ async def safe_delete(msg, delay=3):
 # ─────────────────────────────────────────
 for idx, (app, call) in enumerate(zip(apps, calls), start=1):
 
-    @app.on_message(make_filter())
+    # Tangkap SEMUA update raw untuk debug
+    @app.on_raw_update()
+    async def raw_update(c, update, users, chats, _idx=idx):
+        logger.info(f"[Akun {_idx}] RAW UPDATE: {type(update).__name__}")
+
+    # Tangkap semua pesan
+    @app.on_message()
     async def catch_all(c: Client, m: Message, _idx=idx):
-        if m.text:
-            logger.info(f"[Akun {_idx}] [{m.chat.type}] Pesan: {m.text!r}")
+        logger.info(f"[Akun {_idx}] on_message: {m.text!r} | chat={m.chat.id} | type={m.chat.type}")
+        text = m.text or ""
 
-    @app.on_message(filters.regex(r"^\.ping$") & make_filter())
-    async def cmd_ping(c: Client, m: Message, _idx=idx):
-        logger.info(f"[Akun {_idx}] .ping triggered!")
-        start = time.time()
-        try:
-            await m.delete()
-        except Exception:
-            pass
-        ms = round((time.time() - start) * 1000)
-        sent = await c.send_message(m.chat.id, f"🏓 Pong! `{ms}ms`")
-        asyncio.create_task(safe_delete(sent, 5))
-
-    @app.on_message(filters.regex(r"^\.jvc$") & make_filter())
-    async def cmd_jvc(c: Client, m: Message, _call=call, _idx=idx):
-        logger.info(f"[Akun {_idx}] .jvc triggered!")
-        chat_id = m.chat.id
-        try:
-            await m.delete()
-        except Exception:
-            pass
-        try:
-            await _call.join_group_call(
-                chat_id,
-                MediaStream("anullsrc", ffmpeg_parameters="-f lavfi"),
-            )
-            sent = await c.send_message(chat_id, f"✅ Akun {_idx} berhasil join ke obrolan suara!")
-            asyncio.create_task(safe_delete(sent, 3))
-        except Exception as e:
-            logger.error(f"[Akun {_idx}] join error: {e}")
-            sent = await c.send_message(chat_id, f"❌ Gagal join: `{e}`")
+        if text == ".ping":
+            logger.info(f"[Akun {_idx}] .ping triggered!")
+            start = time.time()
+            try:
+                await m.delete()
+            except Exception:
+                pass
+            ms = round((time.time() - start) * 1000)
+            sent = await c.send_message(m.chat.id, f"🏓 Pong! `{ms}ms`")
             asyncio.create_task(safe_delete(sent, 5))
 
-    @app.on_message(filters.regex(r"^\.leave$") & make_filter())
-    async def cmd_leave(c: Client, m: Message, _call=call, _idx=idx):
-        logger.info(f"[Akun {_idx}] .leave triggered!")
-        chat_id = m.chat.id
-        try:
-            await m.delete()
-        except Exception:
-            pass
-        try:
-            await _call.leave_group_call(chat_id)
-            sent = await c.send_message(chat_id, f"👋 Akun {_idx} berhasil keluar dari obrolan suara!")
-            asyncio.create_task(safe_delete(sent, 3))
-        except Exception as e:
-            logger.error(f"[Akun {_idx}] leave error: {e}")
-            sent = await c.send_message(chat_id, f"❌ Gagal leave: `{e}`")
-            asyncio.create_task(safe_delete(sent, 5))
+        elif text == ".jvc":
+            logger.info(f"[Akun {_idx}] .jvc triggered!")
+            chat_id = m.chat.id
+            try:
+                await m.delete()
+            except Exception:
+                pass
+            try:
+                await call.join_group_call(
+                    chat_id,
+                    MediaStream("anullsrc", ffmpeg_parameters="-f lavfi"),
+                )
+                sent = await c.send_message(chat_id, f"✅ Akun {_idx} berhasil join ke obrolan suara!")
+                asyncio.create_task(safe_delete(sent, 3))
+            except Exception as e:
+                logger.error(f"[Akun {_idx}] join error: {e}")
+                sent = await c.send_message(chat_id, f"❌ Gagal join: `{e}`")
+                asyncio.create_task(safe_delete(sent, 5))
+
+        elif text == ".leave":
+            logger.info(f"[Akun {_idx}] .leave triggered!")
+            chat_id = m.chat.id
+            try:
+                await m.delete()
+            except Exception:
+                pass
+            try:
+                await call.leave_group_call(chat_id)
+                sent = await c.send_message(chat_id, f"👋 Akun {_idx} berhasil keluar dari obrolan suara!")
+                asyncio.create_task(safe_delete(sent, 3))
+            except Exception as e:
+                logger.error(f"[Akun {_idx}] leave error: {e}")
+                sent = await c.send_message(chat_id, f"❌ Gagal leave: `{e}`")
+                asyncio.create_task(safe_delete(sent, 5))
 
 
 # ─────────────────────────────────────────
