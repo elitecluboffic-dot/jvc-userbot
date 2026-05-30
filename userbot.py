@@ -46,7 +46,7 @@ async def handler(event):
 
     elif text == ".leave":
         try:
-            await call.leave_group_call(event.chat_id)
+            await call.leave_call(event.chat_id)
             await event.respond("👋 Berhasil keluar dari obrolan suara!")
         except Exception as e:
             logger.error(f"leave error: {e}")
