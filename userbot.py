@@ -4,8 +4,8 @@ import logging
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pytgcalls import PyTgCalls
-from pytgcalls.types import AudioPiped
-from pytgcalls.types.input_stream.quality import LowQualityAudio
+from pytgcalls.types import MediaStream
+from pytgcalls.types.stream import StreamAudioEnded
 
 # ─────────────────────────────────────────
 #  Config
@@ -13,8 +13,7 @@ from pytgcalls.types.input_stream.quality import LowQualityAudio
 API_ID   = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 
-# SESSION_STRING_1, SESSION_STRING_2, SESSION_STRING_3, dst
-# Otomatis detect semua session yang ada di environment
+# Otomatis detect SESSION_STRING_1, SESSION_STRING_2, dst
 sessions: list[str] = []
 i = 1
 while True:
@@ -35,17 +34,6 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
-
-
-# ─────────────────────────────────────────
-#  Silent audio stream
-# ─────────────────────────────────────────
-def silent_stream():
-    return AudioPiped(
-        "stream://silence",
-        audio_parameters=LowQualityAudio(),
-        additional_ffmpeg_parameters="-f lavfi -i anullsrc=r=48000:cl=stereo",
-    )
 
 
 # ─────────────────────────────────────────
@@ -75,7 +63,14 @@ def register_handlers(client: Client, call: PyTgCalls, akun_idx: int):
         chat_id = message.chat.id
         await message.delete()
         try:
-            await call.join_group_call(chat_id, silent_stream())
+            # MediaStream dengan silence via ffmpeg
+            await call.join_group_call(
+                chat_id,
+                MediaStream(
+                    "anullsrc",
+                    ffmpeg_parameters="-f lavfi",
+                )
+            )
             sent = await c.send_message(
                 chat_id,
                 f"✅ Akun {akun_idx} berhasil join ke obrolan suara!"
@@ -119,12 +114,11 @@ for idx, (client, call) in enumerate(clients, start=1):
 
 
 # ─────────────────────────────────────────
-#  Main — jalanin semua akun bersamaan
+#  Main
 # ─────────────────────────────────────────
 async def main():
     logger.info(f"🚀 Menjalankan {len(clients)} akun...")
 
-    # Start semua client
     for idx, (client, call) in enumerate(clients, start=1):
         await client.start()
         await call.start()
@@ -132,8 +126,6 @@ async def main():
         logger.info(f"🤖 Akun {idx} login sebagai: {me.first_name} (@{me.username})")
 
     logger.info("✅ Semua akun berjalan! Menunggu command .jvc / .leave ...")
-
-    # Jaga proses tetap hidup
     await asyncio.Event().wait()
 
 
