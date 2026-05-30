@@ -4,7 +4,6 @@ import asyncio
 import logging
 from pyrogram import Client, filters, idle
 from pyrogram.types import Message
-from pyrogram.enums import UpdateType
 from pytgcalls import PyTgCalls
 from pytgcalls.types import MediaStream
 
