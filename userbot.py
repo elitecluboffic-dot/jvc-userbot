@@ -10,8 +10,8 @@ from pytgcalls.types import MediaStream
 
 API_ID    = int(os.environ["API_ID"])
 API_HASH  = os.environ["API_HASH"]
-TELE_SESS = os.getenv("SESSION_STRING_1", "").strip()
-PYRO_SESS = os.getenv("SESSION_STRING_2", "").strip()  # session pyrogram untuk voice
+TELE_SESS = os.getenv("SESSION_STRING_1", "").strip()  # Telethon format
+PYRO_SESS = os.getenv("PYRO_SESSION", "").strip()      # Pyrogram format — akun SAMA, format beda
 
 logging.basicConfig(format="%(asctime)s | %(levelname)s | %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -19,13 +19,12 @@ logger = logging.getLogger(__name__)
 # Telethon — buat baca/kirim pesan
 tele = TelegramClient(StringSession(TELE_SESS), API_ID, API_HASH)
 
-# Pyrogram + PyTgCalls — buat voice chat (pakai session yang sama)
+# Pyrogram — buat voice chat (akun sama, session format pyrogram)
 pyro = PyroClient(
-    name="voice_client",
+    name="voice",
     api_id=API_ID,
     api_hash=API_HASH,
-    session_string=PYRO_SESS if PYRO_SESS else None,
-    in_memory=True,
+    session_string=PYRO_SESS,
 )
 call = PyTgCalls(pyro)
 
@@ -46,7 +45,6 @@ async def handler(event):
         return
     logger.info(f"Pesan: {text!r} | chat={event.chat_id}")
 
-    # .ping — ukur latency beneran
     if text == ".ping":
         start = time.monotonic()
         await event.delete()
@@ -55,13 +53,11 @@ async def handler(event):
         await sent.edit(f"🏓 Pong! `{ms}ms`")
         asyncio.create_task(safe_delete(sent, 5))
 
-    # .jvc — join voice chat
     elif text == ".jvc":
         await event.delete()
-        chat_id = event.chat_id
         try:
             await call.join_group_call(
-                chat_id,
+                event.chat_id,
                 MediaStream("anullsrc", ffmpeg_parameters="-f lavfi"),
             )
             sent = await event.respond("✅ Berhasil join ke obrolan suara!")
@@ -71,12 +67,10 @@ async def handler(event):
             sent = await event.respond(f"❌ Gagal join: `{e}`")
             asyncio.create_task(safe_delete(sent, 5))
 
-    # .leave — leave voice chat
     elif text == ".leave":
         await event.delete()
-        chat_id = event.chat_id
         try:
-            await call.leave_group_call(chat_id)
+            await call.leave_group_call(event.chat_id)
             sent = await event.respond("👋 Berhasil keluar dari obrolan suara!")
             asyncio.create_task(safe_delete(sent, 3))
         except Exception as e:
@@ -87,18 +81,15 @@ async def handler(event):
 
 async def main():
     logger.info("🚀 Starting...")
-
-    # Start Pyrogram dulu (buat voice)
     await pyro.start()
     await call.start()
     logger.info("✅ PyTgCalls ready")
 
-    # Start Telethon (buat pesan)
     await tele.start()
     me = await tele.get_me()
     logger.info(f"🤖 Login: {me.first_name} (@{me.username})")
-
     logger.info("✅ Siap! Ketik .ping .jvc .leave")
+
     await tele.run_until_disconnected()
 
 
