@@ -16,7 +16,7 @@ API_HASH = os.environ["API_HASH"]
 sessions: list[str] = []
 i = 1
 while True:
-    s = os.getenv(f"SESSION_STRING_{i}", "")
+    s = os.getenv(f"SESSION_STRING_{i}", "").strip()
     if not s:
         break
     sessions.append(s)
