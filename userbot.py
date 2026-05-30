@@ -17,14 +17,7 @@ logging.basicConfig(format="%(asctime)s | %(levelname)s | %(message)s", level=lo
 logger = logging.getLogger(__name__)
 
 tele = TelegramClient(StringSession(TELE_SESS), API_ID, API_HASH)
-
-pyro = PyroClient(
-    name="voice",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    session_string=PYRO_SESS,
-)
-call = PyTgCalls(pyro)
+call = None
 
 @tele.on(events.NewMessage(outgoing=True))
 @tele.on(events.NewMessage(incoming=True))
@@ -60,7 +53,17 @@ async def handler(event):
             await event.respond(f"❌ Gagal leave: `{e}`")
 
 async def main():
+    global call
     logger.info("🚀 Starting...")
+
+    pyro = PyroClient(
+        name="voice",
+        api_id=API_ID,
+        api_hash=API_HASH,
+        session_string=PYRO_SESS,
+    )
+    call = PyTgCalls(pyro)
+
     await pyro.start()
     await call.start()
     logger.info("✅ PyTgCalls ready")
