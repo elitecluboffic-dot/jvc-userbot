@@ -36,9 +36,9 @@ logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────
-#  Buat client + pytgcalls per akun
+#  Buat semua client & pytgcalls
 # ─────────────────────────────────────────
-clients: list[tuple[Client, PyTgCalls]] = []
+clients: list[tuple[Client, PyTgCalls, int]] = []
 
 for idx, session_str in enumerate(sessions, start=1):
     client = Client(
@@ -48,68 +48,58 @@ for idx, session_str in enumerate(sessions, start=1):
         session_string=session_str,
     )
     call = PyTgCalls(client)
-    clients.append((client, call))
+    clients.append((client, call, idx))
     logger.info(f"✅ Akun {idx} siap")
 
 
 # ─────────────────────────────────────────
-#  Register handler ke semua akun
+#  Register handlers
 # ─────────────────────────────────────────
-def register_handlers(client: Client, call: PyTgCalls, akun_idx: int):
+for (client, call, akun_idx) in clients:
+
+    # Tangkap semua pesan untuk debug
+    @client.on_message(filters.group)
+    async def debug_all(c: Client, message: Message, _idx=akun_idx):
+        if message.text:
+            logger.info(f"[Akun {_idx}] Pesan masuk: {message.text!r}")
 
     @client.on_message(filters.command("jvc", prefixes=".") & filters.group)
-    async def join_voice(c: Client, message: Message):
+    async def join_voice(c: Client, message: Message, _call=call, _idx=akun_idx):
         chat_id = message.chat.id
+        logger.info(f"[Akun {_idx}] .jvc diterima di chat {chat_id}")
         await message.delete()
         try:
-            # MediaStream dengan silence via ffmpeg
-            await call.join_group_call(
+            await _call.join_group_call(
                 chat_id,
                 MediaStream(
                     "anullsrc",
                     ffmpeg_parameters="-f lavfi",
                 )
             )
-            sent = await c.send_message(
-                chat_id,
-                f"✅ Akun {akun_idx} berhasil join ke obrolan suara!"
-            )
+            sent = await c.send_message(chat_id, f"✅ Akun {_idx} berhasil join ke obrolan suara!")
             await asyncio.sleep(3)
             await sent.delete()
         except Exception as e:
-            logger.error(f"[Akun {akun_idx}] Error join voice: {e}")
-            err = await c.send_message(
-                chat_id,
-                f"❌ Akun {akun_idx} gagal join voice chat.\n`{e}`"
-            )
+            logger.error(f"[Akun {_idx}] Error join voice: {e}")
+            err = await c.send_message(chat_id, f"❌ Gagal join voice chat.\n`{e}`")
             await asyncio.sleep(4)
             await err.delete()
 
     @client.on_message(filters.command("leave", prefixes=".") & filters.group)
-    async def leave_voice(c: Client, message: Message):
+    async def leave_voice(c: Client, message: Message, _call=call, _idx=akun_idx):
         chat_id = message.chat.id
+        logger.info(f"[Akun {_idx}] .leave diterima di chat {chat_id}")
         await message.delete()
         try:
-            await call.leave_group_call(chat_id)
-            sent = await c.send_message(
-                chat_id,
-                f"👋 Akun {akun_idx} berhasil keluar dari obrolan suara!"
-            )
+            await _call.leave_group_call(chat_id)
+            sent = await c.send_message(chat_id, f"👋 Akun {_idx} berhasil keluar dari obrolan suara!")
             await asyncio.sleep(3)
             await sent.delete()
         except Exception as e:
-            logger.error(f"[Akun {akun_idx}] Error leave voice: {e}")
-            err = await c.send_message(
-                chat_id,
-                f"❌ Akun {akun_idx} gagal keluar voice chat.\n`{e}`"
-            )
+            logger.error(f"[Akun {_idx}] Error leave voice: {e}")
+            err = await c.send_message(chat_id, f"❌ Gagal keluar voice chat.\n`{e}`")
             await asyncio.sleep(4)
             await err.delete()
-
-
-# Register semua handler
-for idx, (client, call) in enumerate(clients, start=1):
-    register_handlers(client, call, idx)
 
 
 # ─────────────────────────────────────────
@@ -118,7 +108,7 @@ for idx, (client, call) in enumerate(clients, start=1):
 async def main():
     logger.info(f"🚀 Menjalankan {len(clients)} akun...")
 
-    for idx, (client, call) in enumerate(clients, start=1):
+    for (client, call, idx) in clients:
         await client.start()
         await call.start()
         me = await client.get_me()
