@@ -1,4 +1,5 @@
 import os
+import time
 import asyncio
 import logging
 from pyrogram import Client, filters
@@ -36,6 +37,12 @@ logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────
+#  Filter: semua chat (grup, supergroup, channel, private)
+# ─────────────────────────────────────────
+all_chats = filters.group | filters.channel | filters.private
+
+
+# ─────────────────────────────────────────
 #  Buat semua client & pytgcalls
 # ─────────────────────────────────────────
 clients: list[tuple[Client, PyTgCalls, int]] = []
@@ -57,13 +64,27 @@ for idx, session_str in enumerate(sessions, start=1):
 # ─────────────────────────────────────────
 for (client, call, akun_idx) in clients:
 
-    # Tangkap semua pesan untuk debug
-    @client.on_message(filters.group)
+    # Debug: log semua pesan masuk
+    @client.on_message(all_chats)
     async def debug_all(c: Client, message: Message, _idx=akun_idx):
         if message.text:
-            logger.info(f"[Akun {_idx}] Pesan masuk: {message.text!r}")
+            logger.info(f"[Akun {_idx}] Pesan masuk di {message.chat.type.value} {message.chat.id}: {message.text!r}")
 
-    @client.on_message(filters.command("jvc", prefixes=".") & filters.group)
+    # .ping — cek bot hidup atau tidak
+    @client.on_message(filters.command("ping", prefixes=".") & all_chats)
+    async def ping(c: Client, message: Message, _idx=akun_idx):
+        chat_id = message.chat.id
+        logger.info(f"[Akun {_idx}] .ping diterima")
+        start = time.time()
+        await message.delete()
+        sent = await c.send_message(chat_id, "🏓 Pong!")
+        ms = round((time.time() - start) * 1000)
+        await sent.edit_text(f"🏓 Pong! `{ms}ms`")
+        await asyncio.sleep(5)
+        await sent.delete()
+
+    # .jvc — join voice/video chat
+    @client.on_message(filters.command("jvc", prefixes=".") & all_chats)
     async def join_voice(c: Client, message: Message, _call=call, _idx=akun_idx):
         chat_id = message.chat.id
         logger.info(f"[Akun {_idx}] .jvc diterima di chat {chat_id}")
@@ -85,7 +106,8 @@ for (client, call, akun_idx) in clients:
             await asyncio.sleep(4)
             await err.delete()
 
-    @client.on_message(filters.command("leave", prefixes=".") & filters.group)
+    # .leave — leave voice/video chat
+    @client.on_message(filters.command("leave", prefixes=".") & all_chats)
     async def leave_voice(c: Client, message: Message, _call=call, _idx=akun_idx):
         chat_id = message.chat.id
         logger.info(f"[Akun {_idx}] .leave diterima di chat {chat_id}")
@@ -114,7 +136,7 @@ async def main():
         me = await client.get_me()
         logger.info(f"🤖 Akun {idx} login sebagai: {me.first_name} (@{me.username})")
 
-    logger.info("✅ Semua akun berjalan! Menunggu command .jvc / .leave ...")
+    logger.info("✅ Semua akun berjalan! Menunggu command...")
     await asyncio.Event().wait()
 
 
