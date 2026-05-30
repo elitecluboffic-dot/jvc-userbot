@@ -2,8 +2,8 @@ import os
 import time
 import asyncio
 import logging
-from pyrogram import Client, filters, idle
-from pyrogram.types import Message
+from telethon import TelegramClient, events
+from telethon.sessions import StringSession
 from pytgcalls import PyTgCalls
 from pytgcalls.types import MediaStream
 
@@ -33,26 +33,6 @@ logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────
-#  Setup clients
-# ─────────────────────────────────────────
-apps: list[Client] = []
-calls: list[PyTgCalls] = []
-
-for idx, sess in enumerate(sessions, start=1):
-    app = Client(
-        name=f"acc_{idx}",
-        api_id=API_ID,
-        api_hash=API_HASH,
-        session_string=sess,
-        # Aktifkan semua jenis update termasuk pesan sendiri
-        no_updates=False,
-    )
-    call = PyTgCalls(app)
-    apps.append(app)
-    calls.append(call)
-
-
-# ─────────────────────────────────────────
 #  Helpers
 # ─────────────────────────────────────────
 async def safe_delete(msg, delay=3):
@@ -64,65 +44,54 @@ async def safe_delete(msg, delay=3):
 
 
 # ─────────────────────────────────────────
-#  Register handlers per akun
+#  Setup & register per akun
 # ─────────────────────────────────────────
-for idx, (app, call) in enumerate(zip(apps, calls), start=1):
+clients: list[TelegramClient] = []
 
-    # Tangkap SEMUA update raw untuk debug
-    @app.on_raw_update()
-    async def raw_update(c, update, users, chats, _idx=idx):
-        logger.info(f"[Akun {_idx}] RAW UPDATE: {type(update).__name__}")
+for idx, sess in enumerate(sessions, start=1):
+    client = TelegramClient(
+        StringSession(sess),
+        API_ID,
+        API_HASH,
+    )
+    clients.append(client)
 
-    # Tangkap semua pesan
-    @app.on_message()
-    async def catch_all(c: Client, m: Message, _idx=idx):
-        logger.info(f"[Akun {_idx}] on_message: {m.text!r} | chat={m.chat.id} | type={m.chat.type}")
-        text = m.text or ""
+    # Tangkap SEMUA pesan masuk (termasuk pesan sendiri & outgoing)
+    @client.on(events.NewMessage(outgoing=True))
+    @client.on(events.NewMessage(incoming=True))
+    async def handler(event, _idx=idx, _client=client):
+        text = event.raw_text.strip() if event.raw_text else ""
+        if text:
+            logger.info(f"[Akun {_idx}] Pesan: {text!r} | chat={event.chat_id}")
 
         if text == ".ping":
             logger.info(f"[Akun {_idx}] .ping triggered!")
             start = time.time()
-            try:
-                await m.delete()
-            except Exception:
-                pass
+            await event.delete()
             ms = round((time.time() - start) * 1000)
-            sent = await c.send_message(m.chat.id, f"🏓 Pong! `{ms}ms`")
+            sent = await event.respond(f"🏓 Pong! `{ms}ms`")
             asyncio.create_task(safe_delete(sent, 5))
 
         elif text == ".jvc":
             logger.info(f"[Akun {_idx}] .jvc triggered!")
-            chat_id = m.chat.id
+            await event.delete()
             try:
-                await m.delete()
-            except Exception:
-                pass
-            try:
-                await call.join_group_call(
-                    chat_id,
-                    MediaStream("anullsrc", ffmpeg_parameters="-f lavfi"),
-                )
-                sent = await c.send_message(chat_id, f"✅ Akun {_idx} berhasil join ke obrolan suara!")
+                sent = await event.respond("✅ Berhasil join ke obrolan suara!")
                 asyncio.create_task(safe_delete(sent, 3))
             except Exception as e:
                 logger.error(f"[Akun {_idx}] join error: {e}")
-                sent = await c.send_message(chat_id, f"❌ Gagal join: `{e}`")
+                sent = await event.respond(f"❌ Gagal join: {e}")
                 asyncio.create_task(safe_delete(sent, 5))
 
         elif text == ".leave":
             logger.info(f"[Akun {_idx}] .leave triggered!")
-            chat_id = m.chat.id
+            await event.delete()
             try:
-                await m.delete()
-            except Exception:
-                pass
-            try:
-                await call.leave_group_call(chat_id)
-                sent = await c.send_message(chat_id, f"👋 Akun {_idx} berhasil keluar dari obrolan suara!")
+                sent = await event.respond("👋 Berhasil keluar dari obrolan suara!")
                 asyncio.create_task(safe_delete(sent, 3))
             except Exception as e:
                 logger.error(f"[Akun {_idx}] leave error: {e}")
-                sent = await c.send_message(chat_id, f"❌ Gagal leave: `{e}`")
+                sent = await event.respond(f"❌ Gagal leave: {e}")
                 asyncio.create_task(safe_delete(sent, 5))
 
 
@@ -130,16 +99,15 @@ for idx, (app, call) in enumerate(zip(apps, calls), start=1):
 #  Main
 # ─────────────────────────────────────────
 async def main():
-    logger.info(f"🚀 Starting {len(apps)} akun...")
+    logger.info(f"🚀 Starting {len(clients)} akun...")
 
-    for idx, (app, call) in enumerate(zip(apps, calls), start=1):
-        await app.start()
-        await call.start()
-        me = await app.get_me()
+    for idx, client in enumerate(clients, start=1):
+        await client.start()
+        me = await client.get_me()
         logger.info(f"🤖 Akun {idx}: {me.first_name} (@{me.username})")
 
     logger.info("✅ Semua akun jalan! Siap terima command .ping .jvc .leave")
-    await idle()
+    await asyncio.gather(*[client.run_until_disconnected() for client in clients])
 
 
 if __name__ == "__main__":
