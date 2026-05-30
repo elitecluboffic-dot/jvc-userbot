@@ -36,7 +36,6 @@ async def handler(event):
 
     if text == ".ping":
         start = time.monotonic()
-        await event.delete()
         sent = await event.respond("🏓 Mengukur...")
         ms = round((time.monotonic() - start) * 1000)
         await sent.edit(f"🏓 Pong! `{ms}ms`")
