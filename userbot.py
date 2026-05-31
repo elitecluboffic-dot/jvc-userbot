@@ -19,14 +19,14 @@ logger = logging.getLogger(__name__)
 tele = TelegramClient(StringSession(TELE_SESS), API_ID, API_HASH)
 call = None
 
-# 🔥 FIX UTAMA: Gunakan satu decorator gabungan yang bersih untuk menangkap incoming & outgoing
+# Gunakan filter fungsi biar menangkap incoming & outgoing dengan bersih
 @tele.on(events.NewMessage(func=lambda e: e.text))
 async def handler(event):
     text = event.raw_text.strip() if event.raw_text else ""
     if not text:
         return
         
-    # Mengabaikan pesan balasan dari bot itu sendiri agar tidak memicu loop perintah
+    # Mengabaikan respon dari bot itu sendiri supaya tidak terjadi loop/race condition
     if text.startswith("👋 Berhasil") or text.startswith("✅ Berhasil") or text.startswith("🏓"):
         return
 
@@ -51,9 +51,29 @@ async def handler(event):
 
     elif text == ".leave":
         try:
-            # 🔥 FIX PYTGCALLS: Paksa drop & leave call secara bersih dari memory session
-            await call.leave_call(event.chat_id)
-            await event.respond("👋 Berhasil keluar dari obrolan suara!")
+            chat_id = event.chat_id
+            
+            # 1. Kirim sinyal leave ke telegram voice chat
+            await call.leave_call(chat_id)
+            
+            # 2. HARD RESET: Hapus paksa chat_id dari cache internal pytgcalls
+            # Ini buat matiin paksa fitur "Auto-Reconnect" bawaan pytgcalls yang suka keras kepala
+            if hasattr(call, '_active_calls') and chat_id in call._active_calls:
+                try:
+                    call._active_calls.remove(chat_id)
+                except:
+                    pass
+            elif hasattr(call, 'active_calls') and chat_id in call.active_calls:
+                try:
+                    call.active_calls.remove(chat_id)
+                except:
+                    pass
+                    
+            # 3. Kasih jeda dikit sebelum kirim text biar state network bener-bener close dulu
+            await asyncio.sleep(1)
+            await event.respond("👋 Berhasil keluar dari obrolan suara secara permanen!")
+            logger.info(f"👉 [VOICE RESET] Sukses keluar total dan hapus cache dari group: {chat_id}")
+            
         except Exception as e:
             logger.error(f"leave error: {e}")
             await event.respond(f"❌ Gagal leave: `{e}`")
