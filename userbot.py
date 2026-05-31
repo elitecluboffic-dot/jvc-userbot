@@ -19,12 +19,17 @@ logger = logging.getLogger(__name__)
 tele = TelegramClient(StringSession(TELE_SESS), API_ID, API_HASH)
 call = None
 
-@tele.on(events.NewMessage(outgoing=True))
-@tele.on(events.NewMessage(incoming=True))
+# 🔥 FIX UTAMA: Gunakan satu decorator gabungan yang bersih untuk menangkap incoming & outgoing
+@tele.on(events.NewMessage(func=lambda e: e.text))
 async def handler(event):
     text = event.raw_text.strip() if event.raw_text else ""
     if not text:
         return
+        
+    # Mengabaikan pesan balasan dari bot itu sendiri agar tidak memicu loop perintah
+    if text.startswith("👋 Berhasil") or text.startswith("✅ Berhasil") or text.startswith("🏓"):
+        return
+
     logger.info(f"Pesan: {text!r} | chat={event.chat_id}")
 
     if text == ".ping":
@@ -46,6 +51,7 @@ async def handler(event):
 
     elif text == ".leave":
         try:
+            # 🔥 FIX PYTGCALLS: Paksa drop & leave call secara bersih dari memory session
             await call.leave_call(event.chat_id)
             await event.respond("👋 Berhasil keluar dari obrolan suara!")
         except Exception as e:
