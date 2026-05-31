@@ -5,6 +5,8 @@ import logging
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from pyrogram import Client as PyroClient
+from pyrogram.raw.functions.phone import DiscardGroupCallParticipant
+from pyrogram.raw.types import InputGroupCall
 from pytgcalls import PyTgCalls
 from pytgcalls.types import MediaStream
 
@@ -17,16 +19,15 @@ logging.basicConfig(format="%(asctime)s | %(levelname)s | %(message)s", level=lo
 logger = logging.getLogger(__name__)
 
 tele = TelegramClient(StringSession(TELE_SESS), API_ID, API_HASH)
+pyro = None
 call = None
 
-# Gunakan filter fungsi biar menangkap incoming & outgoing dengan bersih
 @tele.on(events.NewMessage(func=lambda e: e.text))
 async def handler(event):
     text = event.raw_text.strip() if event.raw_text else ""
     if not text:
         return
         
-    # Mengabaikan respon dari bot itu sendiri supaya tidak terjadi loop/race condition
     if text.startswith("👋 Berhasil") or text.startswith("✅ Berhasil") or text.startswith("🏓"):
         return
 
@@ -50,38 +51,59 @@ async def handler(event):
             await event.respond(f"❌ Gagal join: `{e}`")
 
     elif text == ".leave":
+        chat_id = event.chat_id
         try:
-            chat_id = event.chat_id
-            
-            # 1. Kirim sinyal leave ke telegram voice chat
+            # 1. Coba leave lewat cara normal pytgcalls
             await call.leave_call(chat_id)
-            
-            # 2. HARD RESET: Hapus paksa chat_id dari cache internal pytgcalls
-            # Ini buat matiin paksa fitur "Auto-Reconnect" bawaan pytgcalls yang suka keras kepala
-            if hasattr(call, '_active_calls') and chat_id in call._active_calls:
-                try:
-                    call._active_calls.remove(chat_id)
-                except:
-                    pass
-            elif hasattr(call, 'active_calls') and chat_id in call.active_calls:
-                try:
-                    call.active_calls.remove(chat_id)
-                except:
-                    pass
-                    
-            # 3. Kasih jeda dikit sebelum kirim text biar state network bener-bener close dulu
-            await asyncio.sleep(1)
-            await event.respond("👋 Berhasil keluar dari obrolan suara secara permanen!")
-            logger.info(f"👉 [VOICE RESET] Sukses keluar total dan hapus cache dari group: {chat_id}")
+            await asyncio.sleep(0.5)
+            await event.respond("👋 Berhasil keluar dari obrolan suara!")
+            logger.info(f"👉 [LEAVE SUCCESS] Keluar normal dari {chat_id}")
             
         except Exception as e:
-            logger.error(f"leave error: {e}")
-            await event.respond(f"❌ Gagal leave: `{e}`")
+            logger.warning(f"Pytgcalls leave gantung/error: {e}. Menjalankan FORCE DISCONNECT...")
+            
+            # 2. 🔥 FORCE DISCONNECT ENGINE (Bypass "Not in a call" Bug)
+            # Jika pytgcalls error/gantung, kita tembak langsung lewat raw Telegram API via Pyrogram
+            try:
+                # Ambil info full chat untuk nyari group call yang lagi aktif
+                peer = await pyro.resolve_peer(chat_id)
+                full_chat = await pyro.invoke(
+                    pyrogram.raw.functions.channels.GetFullChannel(channel=peer) 
+                    if chat_id < 0 and str(chat_id).startswith("-100") 
+                    else pyrogram.raw.functions.messages.GetFullChat(chat_id=abs(chat_id))
+                )
+                
+                # Ambil id group call-nya
+                call_info = full_chat.full_chat.call
+                if call_info:
+                    input_call = InputGroupCall(id=call_info.id, access_hash=call_info.access_hash)
+                    # Kick akun kita sendiri keluar dari obrolan suara secara paksa
+                    await pyro.invoke(
+                        DiscardGroupCallParticipant(
+                            call=input_call,
+                            participant=await pyro.resolve_peer("me")
+                        )
+                    )
+                    await event.respond("👋 Force Disconnect: Berhasil keluar secara paksa dari server Telegram!")
+                    logger.info(f"🔥 [FORCE LEAVE] Akun dipaksa keluar dari server untuk chat {chat_id}")
+                else:
+                    await event.respond("👋 Bot sudah tidak ada di dalam call (UI Telegram Anda mungkin Ghosting).")
+            except Exception as ex:
+                logger.error(f"Force leave fatal error: {ex}")
+                await event.respond(f"❌ Gagal total untuk leave: `{ex}`")
+        
+        finally:
+            # Bersihkan sisa cache tracker aktif
+            for cache_attr in ['_active_calls', 'active_calls']:
+                if hasattr(call, cache_attr):
+                    try: getattr(call, cache_attr).remove(chat_id)
+                    except: pass
 
 async def main():
-    global call
+    global call, pyro
     logger.info("🚀 Starting...")
 
+    import pyrogram  # Pastikan di-import secara lokal untuk raw functions
     pyro = PyroClient(
         name="voice",
         api_id=API_ID,
@@ -92,11 +114,12 @@ async def main():
 
     await pyro.start()
     await call.start()
-    logger.info("✅ PyTgCalls ready")
+    logger.info("✅ PyTgCalls & Pyrogram Raw Engine ready")
+    
     await tele.start()
     me = await tele.get_me()
     logger.info(f"🤖 Login: {me.first_name} (@{me.username})")
-    logger.info("✅ Siap! Ketik .ping .jvc .leave")
+    logger.info("✅ Siap! Perintah .leave sekarang dilengkapi Force-Kill")
     await tele.run_until_disconnected()
 
 if __name__ == "__main__":
