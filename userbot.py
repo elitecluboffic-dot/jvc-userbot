@@ -22,16 +22,23 @@ tele = TelegramClient(StringSession(TELE_SESS), API_ID, API_HASH)
 pyro = None
 call = None
 
-@tele.on(events.NewMessage(func=lambda e: e.text))
+# 🔥 FIX TOTAL: Kunci hanya untuk pesan keluar (outgoing=True) dari akun LU SENDIRI
+# Langkah ini otomatis ngebuntungin semua spam grup lain yang bikin bot lu crash & over-triggered
+@tele.on(events.NewMessage(outgoing=True))
 async def handler(event):
     text = event.raw_text.strip() if event.raw_text else ""
     if not text:
         return
         
+    # Abaikan text status dari bot sendiri agar tidak looping
     if text.startswith("👋 Berhasil") or text.startswith("✅ Berhasil") or text.startswith("🏓"):
         return
 
-    logger.info(f"Pesan: {text!r} | chat={event.chat_id}")
+    # Filter ketat: Hanya proses perintah yang diawali dengan tanda titik (.)
+    if not text.startswith("."):
+        return
+
+    logger.info(f"Perintah Diterima: {text!r} | chat={event.chat_id}")
 
     if text == ".ping":
         start = time.monotonic()
@@ -60,12 +67,11 @@ async def handler(event):
             logger.info(f"👉 [LEAVE SUCCESS] Keluar normal dari {chat_id}")
             
         except Exception as e:
-            logger.warning(f"Pytgcalls leave gantung/error: {e}. Menjalankan FORCE DISCONNECT...")
+            logger.warning(f"Pytgcalls leave error ({e}). Menjalankan FORCE DISCONNECT...")
             
-            # 2. 🔥 FORCE DISCONNECT ENGINE (Bypass "Not in a call" Bug)
-            # Jika pytgcalls error/gantung, kita tembak langsung lewat raw Telegram API via Pyrogram
+            # 2. FORCE KILL: Mengatasi bug "The userbot is not in a call" tapi akun nyangkut
             try:
-                # Ambil info full chat untuk nyari group call yang lagi aktif
+                import pyrogram
                 peer = await pyro.resolve_peer(chat_id)
                 full_chat = await pyro.invoke(
                     pyrogram.raw.functions.channels.GetFullChannel(channel=peer) 
@@ -73,27 +79,24 @@ async def handler(event):
                     else pyrogram.raw.functions.messages.GetFullChat(chat_id=abs(chat_id))
                 )
                 
-                # Ambil id group call-nya
                 call_info = full_chat.full_chat.call
                 if call_info:
                     input_call = InputGroupCall(id=call_info.id, access_hash=call_info.access_hash)
-                    # Kick akun kita sendiri keluar dari obrolan suara secara paksa
                     await pyro.invoke(
                         DiscardGroupCallParticipant(
                             call=input_call,
                             participant=await pyro.resolve_peer("me")
                         )
                     )
-                    await event.respond("👋 Force Disconnect: Berhasil keluar secara paksa dari server Telegram!")
-                    logger.info(f"🔥 [FORCE LEAVE] Akun dipaksa keluar dari server untuk chat {chat_id}")
+                    await event.respond("👋 Force Disconnect: Berhasil dipaksa keluar via Telegram API!")
                 else:
-                    await event.respond("👋 Bot sudah tidak ada di dalam call (UI Telegram Anda mungkin Ghosting).")
+                    await event.respond("👋 Bot sudah bersih dari call (UI Telegram Anda mungkin sedang ghosting).")
             except Exception as ex:
                 logger.error(f"Force leave fatal error: {ex}")
                 await event.respond(f"❌ Gagal total untuk leave: `{ex}`")
         
         finally:
-            # Bersihkan sisa cache tracker aktif
+            # Bersihkan cache panggilan internal
             for cache_attr in ['_active_calls', 'active_calls']:
                 if hasattr(call, cache_attr):
                     try: getattr(call, cache_attr).remove(chat_id)
@@ -103,7 +106,6 @@ async def main():
     global call, pyro
     logger.info("🚀 Starting...")
 
-    import pyrogram  # Pastikan di-import secara lokal untuk raw functions
     pyro = PyroClient(
         name="voice",
         api_id=API_ID,
@@ -114,12 +116,11 @@ async def main():
 
     await pyro.start()
     await call.start()
-    logger.info("✅ PyTgCalls & Pyrogram Raw Engine ready")
+    logger.info("✅ PyTgCalls Engine ready")
     
     await tele.start()
     me = await tele.get_me()
-    logger.info(f"🤖 Login: {me.first_name} (@{me.username})")
-    logger.info("✅ Siap! Perintah .leave sekarang dilengkapi Force-Kill")
+    logger.info(f"🤖 Login Terverifikasi: {me.first_name} (@{me.username})")
     await tele.run_until_disconnected()
 
 if __name__ == "__main__":
