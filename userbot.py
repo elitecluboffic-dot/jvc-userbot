@@ -5,7 +5,8 @@ import logging
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from pyrogram import Client as PyroClient
-from pyrogram.raw.functions.phone import DiscardGroupCallParticipant
+# 🔥 FIX IMPORT: Menggunakan fungsi raw API Pyrogram yang benar
+from pyrogram.raw.functions.phone import LeaveGroupCall
 from pyrogram.raw.types import InputGroupCall
 from pytgcalls import PyTgCalls
 from pytgcalls.types import MediaStream
@@ -22,19 +23,16 @@ tele = TelegramClient(StringSession(TELE_SESS), API_ID, API_HASH)
 pyro = None
 call = None
 
-# 🔥 FIX TOTAL: Kunci hanya untuk pesan keluar (outgoing=True) dari akun LU SENDIRI
-# Langkah ini otomatis ngebuntungin semua spam grup lain yang bikin bot lu crash & over-triggered
+# Filter ketat: Hanya merespon pesan keluar (outgoing) dari akun lu sendiri
 @tele.on(events.NewMessage(outgoing=True))
 async def handler(event):
     text = event.raw_text.strip() if event.raw_text else ""
     if not text:
         return
         
-    # Abaikan text status dari bot sendiri agar tidak looping
     if text.startswith("👋 Berhasil") or text.startswith("✅ Berhasil") or text.startswith("🏓"):
         return
 
-    # Filter ketat: Hanya proses perintah yang diawali dengan tanda titik (.)
     if not text.startswith("."):
         return
 
@@ -69,7 +67,7 @@ async def handler(event):
         except Exception as e:
             logger.warning(f"Pytgcalls leave error ({e}). Menjalankan FORCE DISCONNECT...")
             
-            # 2. FORCE KILL: Mengatasi bug "The userbot is not in a call" tapi akun nyangkut
+            # 2. 🔥 FORCE DISCONNECT: Tembak server Telegram langsung pakai LeaveGroupCall
             try:
                 import pyrogram
                 peer = await pyro.resolve_peer(chat_id)
@@ -82,21 +80,23 @@ async def handler(event):
                 call_info = full_chat.full_chat.call
                 if call_info:
                     input_call = InputGroupCall(id=call_info.id, access_hash=call_info.access_hash)
+                    # Putus paksa koneksi stream di group call tersebut
                     await pyro.invoke(
-                        DiscardGroupCallParticipant(
+                        LeaveGroupCall(
                             call=input_call,
-                            participant=await pyro.resolve_peer("me")
+                            source=0 # 0 berarti disconnect total dari sisi client
                         )
                     )
-                    await event.respond("👋 Force Disconnect: Berhasil dipaksa keluar via Telegram API!")
+                    await event.respond("👋 Force Disconnect: Berhasil dipaksa keluar via raw API Telegram!")
+                    logger.info(f"🔥 [FORCE LEAVE] Sukses paksa keluar dari call chat {chat_id}")
                 else:
-                    await event.respond("👋 Bot sudah bersih dari call (UI Telegram Anda mungkin sedang ghosting).")
+                    await event.respond("👋 Bot sudah tidak ada di dalam call (UI Telegram Anda mungkin sedang ghosting).")
             except Exception as ex:
                 logger.error(f"Force leave fatal error: {ex}")
                 await event.respond(f"❌ Gagal total untuk leave: `{ex}`")
         
         finally:
-            # Bersihkan cache panggilan internal
+            # Bersihkan sisa-sisa tracking cache biar ga memicu auto-reconnect
             for cache_attr in ['_active_calls', 'active_calls']:
                 if hasattr(call, cache_attr):
                     try: getattr(call, cache_attr).remove(chat_id)
