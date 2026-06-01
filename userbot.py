@@ -181,8 +181,6 @@ async def handler(event):
             logger.error(f"Detailed Info error: {e}")
             await sent.edit(f"❌ **Gagal membongkar info detil:** `{e}`")
 
-async_run_main = main
-
 async def main():
     global call, pyro
     logger.info("🚀 Starting...")
