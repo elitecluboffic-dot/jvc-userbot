@@ -222,4 +222,4 @@ async def main():
     await tele.run_until_disconnected()
 
 if __name__ == "__main__":
-    asyncio.run=asyncio.run(main())
+    asyncio.run(main())
