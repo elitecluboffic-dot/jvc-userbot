@@ -94,7 +94,7 @@ async def handler(event):
                     try: getattr(call, cache_attr).remove(chat_id)
                     except: pass
 
-    # ==================== PERINTAH INFO (SUPER DETAIL - PYROGRAM HYBRID FIX) ====================
+    # ==================== PERINTAH INFO (SUPER DETAIL - FORCE SYNC CHAT MURNI) ====================
     elif text.startswith(".info"):
         parts = text.split(" ", 1)
         user_obj = None
@@ -102,7 +102,7 @@ async def handler(event):
         
         sent = await event.respond("🔍 Membongkar database profil target...")
         try:
-            # 1. Tentukan target ID dari Reply atau Teks tambahan
+            # 1. Tarik target ID
             if event.is_reply:
                 reply_msg = await event.get_reply_message()
                 target_id = reply_msg.sender_id
@@ -112,7 +112,6 @@ async def handler(event):
                     target_id = int(target_raw)
                 else:
                     try:
-                        # Kalau inputnya username (@orang), ubah dulu jadi objek lewat Telethon biasa
                         user_obj = await tele.get_entity(target_raw)
                         target_id = user_obj.id
                     except Exception:
@@ -121,24 +120,29 @@ async def handler(event):
                 user_obj = await tele.get_me()
                 target_id = user_obj.id
 
-            # 2. Eksekusi Pembongkaran Menggunakan Jalur Hybrid (Telethon + Pyrogram Fallback)
+            # 2. SENJATA MEKANIK: Paksa Telegram kirim ulang cache participant grup biar tersinkronisasi
+            if not user_obj and not event.is_private:
+                logger.info(f"🔄 Sinkronisasi ulang member grup {event.chat_id} untuk memancing ID {target_id}...")
+                try:
+                    # Ambil list partisipan grup saat ini, Telethon otomatis nyatet entitas mereka semua ke database session
+                    await tele.get_participants(event.chat_id, limit=200)
+                except Exception as sync_err:
+                    logger.warning(f"Gagal melakukan sinkronisasi otomatis grup: {sync_err}")
+
+            # 3. Ambil Entitas murni pasca sinkronisasi cache
             if not user_obj:
                 try:
-                    # Coba jalur Telethon dulu
                     user_obj = await tele.get_entity(target_id)
                 except Exception:
-                    # JIKA TELETHON BUTA, PAKSA PYROGRAM BUAT NYARI SEBAGAI BACKUP!
-                    logger.info(f"🔄 Telethon buta entity. Mengalihkan pencarian ID {target_id} ke Pyrogram...")
+                    # Jalur darurat Pyrogram jika Telethon bener-bener mentok
                     try:
                         pyro_user = await pyro.get_users(target_id)
-                        # Daftarkan entitasnya secara paksa ke dalam memori Telethon supaya tidak rewel
                         user_obj = await tele.get_entity(pyro_user.id)
-                    except Exception as py_err:
-                        logger.error(f"Pyrogram backup search pun gagal: {py_err}")
+                    except Exception:
                         user_obj = None
 
             if not user_obj:
-                await sent.edit("❌ **Gagal total mengambil entitas target!** User terlalu asing bagi Telethon & Pyrogram.")
+                await sent.edit("❌ **Gagal mengambil entitas target!** Akun target tidak merespon sistem sinkronisasi grup.")
                 return
 
             # Tarik detail data bio dan jumlah foto profil
