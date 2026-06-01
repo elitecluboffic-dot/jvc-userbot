@@ -94,55 +94,54 @@ async def handler(event):
                     try: getattr(call, cache_attr).remove(chat_id)
                     except: pass
 
-    # ==================== PERINTAH INFO (SUPER DETAIL - FIX ENTITY TOTAL) ====================
+    # ==================== PERINTAH INFO (SUPER DETAIL - PYROGRAM HYBRID FIX) ====================
     elif text.startswith(".info"):
         parts = text.split(" ", 1)
         user_obj = None
+        target_id = None
         
         sent = await event.respond("🔍 Membongkar database profil target...")
         try:
-            # 1. Jika me-reply pesan orang lain
+            # 1. Tentukan target ID dari Reply atau Teks tambahan
             if event.is_reply:
                 reply_msg = await event.get_reply_message()
-                
-                # Coba Opsi A: Ambil dari objek pesan langsung
-                try:
-                    user_obj = await reply_msg.get_sender()
-                except Exception:
-                    user_obj = None
-                
-                # Coba Opsi B (Bypass Cache Error): Cari via ID murni di chat terdaftar
-                if not user_obj or not hasattr(user_obj, 'premium'):
-                    try:
-                        user_obj = await tele.get_entity(reply_msg.sender_id)
-                    except Exception:
-                        # Coba Opsi C (Senjata Pamungkas): Paksa iterasi search member aktif di grup saat itu juga
-                        try:
-                            chat_input = await event.get_input_chat()
-                            async for u in tele.iter_participants(chat_input, search=str(reply_msg.sender_id)):
-                                if u.id == reply_msg.sender_id:
-                                    user_obj = u
-                                    break
-                        except Exception:
-                            user_obj = None
-                
-            # 2. Jika menyertakan @username atau ID angka setelah spasi
+                target_id = reply_msg.sender_id
             elif len(parts) > 1:
-                target = parts[1].strip()
-                if target.isdigit():
-                    target = int(target)
-                user_obj = await tele.get_entity(target)
-                
-            # 3. Jika hanya mengetik .info saja (cek profil sendiri)
+                target_raw = parts[1].strip()
+                if target_raw.isdigit():
+                    target_id = int(target_raw)
+                else:
+                    try:
+                        # Kalau inputnya username (@orang), ubah dulu jadi objek lewat Telethon biasa
+                        user_obj = await tele.get_entity(target_raw)
+                        target_id = user_obj.id
+                    except Exception:
+                        target_id = target_raw
             else:
                 user_obj = await tele.get_me()
+                target_id = user_obj.id
 
-            # Validasi akhir jika semua opsi di atas gagal total
+            # 2. Eksekusi Pembongkaran Menggunakan Jalur Hybrid (Telethon + Pyrogram Fallback)
             if not user_obj:
-                await sent.edit("❌ **Gagal mengambil data user target!** Akun ini terlalu asing dan tidak terindeks di server grup saat ini.")
+                try:
+                    # Coba jalur Telethon dulu
+                    user_obj = await tele.get_entity(target_id)
+                except Exception:
+                    # JIKA TELETHON BUTA, PAKSA PYROGRAM BUAT NYARI SEBAGAI BACKUP!
+                    logger.info(f"🔄 Telethon buta entity. Mengalihkan pencarian ID {target_id} ke Pyrogram...")
+                    try:
+                        pyro_user = await pyro.get_users(target_id)
+                        # Daftarkan entitasnya secara paksa ke dalam memori Telethon supaya tidak rewel
+                        user_obj = await tele.get_entity(pyro_user.id)
+                    except Exception as py_err:
+                        logger.error(f"Pyrogram backup search pun gagal: {py_err}")
+                        user_obj = None
+
+            if not user_obj:
+                await sent.edit("❌ **Gagal total mengambil entitas target!** User terlalu asing bagi Telethon & Pyrogram.")
                 return
 
-            # Ambil detail tambahan dan foto profil
+            # Tarik detail data bio dan jumlah foto profil
             full_user = await tele(GetFullUserRequest(id=user_obj.id))
             photos = await tele.get_profile_photos(user_obj.id, limit=0)
             
