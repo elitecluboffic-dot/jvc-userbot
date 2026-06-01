@@ -94,7 +94,7 @@ async def handler(event):
                     try: getattr(call, cache_attr).remove(chat_id)
                     except: pass
 
-    # ==================== PERINTAH INFO (SUPER DETAIL - BYPASS CACHE) ====================
+    # ==================== PERINTAH INFO (SUPER DETAIL - FIX ENTITY TOTAL) ====================
     elif text.startswith(".info"):
         parts = text.split(" ", 1)
         user_obj = None
@@ -104,7 +104,27 @@ async def handler(event):
             # 1. Jika me-reply pesan orang lain
             if event.is_reply:
                 reply_msg = await event.get_reply_message()
-                user_obj = await reply_msg.get_sender() # Ambil entitas lengkap langsung dari pesan
+                
+                # Coba Opsi A: Ambil dari objek pesan langsung
+                try:
+                    user_obj = await reply_msg.get_sender()
+                except Exception:
+                    user_obj = None
+                
+                # Coba Opsi B (Bypass Cache Error): Cari via ID murni di chat terdaftar
+                if not user_obj or not hasattr(user_obj, 'premium'):
+                    try:
+                        user_obj = await tele.get_entity(reply_msg.sender_id)
+                    except Exception:
+                        # Coba Opsi C (Senjata Pamungkas): Paksa iterasi search member aktif di grup saat itu juga
+                        try:
+                            chat_input = await event.get_input_chat()
+                            async for u in tele.iter_participants(chat_input, search=str(reply_msg.sender_id)):
+                                if u.id == reply_msg.sender_id:
+                                    user_obj = u
+                                    break
+                        except Exception:
+                            user_obj = None
                 
             # 2. Jika menyertakan @username atau ID angka setelah spasi
             elif len(parts) > 1:
@@ -117,11 +137,12 @@ async def handler(event):
             else:
                 user_obj = await tele.get_me()
 
+            # Validasi akhir jika semua opsi di atas gagal total
             if not user_obj:
-                await sent.edit("❌ Gagal mengambil data user target!")
+                await sent.edit("❌ **Gagal mengambil data user target!** Akun ini terlalu asing dan tidak terindeks di server grup saat ini.")
                 return
 
-            # Ambil detail tambahan dan foto
+            # Ambil detail tambahan dan foto profil
             full_user = await tele(GetFullUserRequest(id=user_obj.id))
             photos = await tele.get_profile_photos(user_obj.id, limit=0)
             
