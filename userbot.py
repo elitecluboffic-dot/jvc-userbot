@@ -5,7 +5,7 @@ import logging
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.tl.functions.users import GetFullUserRequest
-from telethon.tl.types import Dialog, Channel, Chat
+from telethon.tl.types import Dialog, Channel, Chat, User
 from telethon.errors import FloodWaitError
 from pyrogram import Client as PyroClient
 from pyrogram.raw.functions.phone import LeaveGroupCall
@@ -34,7 +34,7 @@ async def handler(event):
     text = event.raw_text.strip()
     
     # Supaya bot ga ngerespon balik hasil editannya sendiri
-    if text.startswith("ℹ️ **DETAILED") or text.startswith("🏓 Pong!") or text.startswith("👋 Berhasil") or text.startswith("✅ Berhasil") or text.startswith("📢 **[BROADCAST PROGRESS]**"):
+    if text.startswith("ℹ️ **DETAILED") or text.startswith("🏓 Pong!") or text.startswith("👋 Berhasil") or text.startswith("✅ Berhasil") or text.startswith("📢 **[BROADCAST PROGRESS]**") or text.startswith("📢 **[BROADCAST GRUP PROGRESS]**"):
         return
 
     # Bot HANYA memproses pesan yang diawali tanda titik
@@ -227,7 +227,7 @@ async def handler(event):
             logger.error(f"Detailed Info error: {e}")
             await sent.edit(f"❌ **Gagal membongkar info detil:** `{e}`")
 
-    # ==================== PERINTAH BROADCAST KHUSUS GRUP (FIX ONLY GROUPS) ====================
+    # ==================== PERINTAH BROADCAST KHUSUS GRUP (FIX ONLY GROUPS + SAFELOG) ====================
     elif text.startswith(".bc"):
         parts = text.split(" ", 1)
         bc_msg = parts[1].strip() if len(parts) > 1 else ""
@@ -256,7 +256,8 @@ async def handler(event):
             dialogs = await tele.get_dialogs()
         except Exception as e:
             logger.error(f"Gagal memuat dialog list: {e}")
-            await sent.edit(f"❌ **Gagal memuat daftar chat:** `{e}`")
+            try: await sent.edit(f"❌ **Gagal memuat daftar chat:** `{e}`")
+            except Exception: await event.respond(f"❌ **Gagal memuat daftar chat:** `{e}`")
             return
 
         # FILTER KHUSUS: Hanya masukkan tipe dialog yang berwujud Grup atau Supergroup (Skip DM / Channel)
@@ -264,10 +265,14 @@ async def handler(event):
         total_targets = len(targets)
         
         if total_targets == 0:
-            await sent.edit("❌ **Gagal:** Akun lo tidak terdeteksi berada di dalam grup manapun saat ini.")
+            try: await sent.edit("❌ **Gagal:** Akun lo tidak terdeteksi berada di dalam grup manapun saat ini.")
+            except Exception: await event.respond("❌ **Gagal:** Akun lo tidak terdeteksi berada di dalam grup manapun saat ini.")
             return
 
-        await sent.edit(f"📢 **[BROADCAST PROGRESS]**\nMemulai pengiriman khusus ke `{total_targets}` Grup...")
+        try:
+            await sent.edit(f"📢 **[BROADCAST PROGRESS]**\nMemulai pengiriman khusus ke `{total_targets}` Grup...")
+        except Exception:
+            sent = await event.respond(f"📢 **[BROADCAST PROGRESS]**\nMemulai pengiriman khusus ke `{total_targets}` Grup...")
 
         for index, target in enumerate(targets, start=1):
             try:
@@ -279,9 +284,9 @@ async def handler(event):
                 success_count += 1
                 logger.info(f"🚀 [BC GROUP SUCCESS] Terkirim ke grup -> {target.name} (ID: {target.id})")
                 
-                # Update status log berkala setiap kelipatan 3 grup
+                # Update status log berkala setiap kelipatan 3 grup (DIBUNGKUS PROTEKSI AMAN)
                 if index % 3 == 0 or index == total_targets:
-                    await sent.edit(
+                    progress_text = (
                         f"📢 **[BROADCAST GRUP PROGRESS]**\n"
                         f"───────────────────\n"
                         f"🔄 Progress: `{index}/{total_targets}` grup\n"
@@ -290,6 +295,10 @@ async def handler(event):
                         f"───────────────────\n"
                         f"⚡ *Sedang menyebar ke grup-grup, tunggu sebentar...*"
                     )
+                    try:
+                        await sent.edit(progress_text)
+                    except Exception:
+                        sent = await event.respond(progress_text)
                 
                 # Jeda aman anti muting Telegram
                 await asyncio.sleep(0.6)
@@ -321,7 +330,13 @@ async def handler(event):
             "──────────────────────────────\n"
             "📢 *Semua pesan khusus grup telah disebarkan bersih tanpa masuk DM personal.*"
         )
-        await sent.edit(report_text)
+        
+        # JALUR AMAN REPORT AKHIR: Anti rpcerrorlist.MessageIdInvalidError
+        try:
+            await sent.edit(report_text)
+        except Exception:
+            await event.respond(report_text)
+            
         logger.info("👉 [BROADCAST GROUP COMPLETE] Selesai sebar grup.")
 
 async def main():
