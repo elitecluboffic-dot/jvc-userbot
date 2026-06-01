@@ -5,6 +5,8 @@ import logging
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.tl.functions.users import GetFullUserRequest
+from telethon.tl.types import Dialog, Channel, Chat
+from telethon.errors import FloodWaitError
 from pyrogram import Client as PyroClient
 from pyrogram.raw.functions.phone import LeaveGroupCall
 from pyrogram.raw.types import InputGroupCall
@@ -32,7 +34,7 @@ async def handler(event):
     text = event.raw_text.strip()
     
     # Supaya bot ga ngerespon balik hasil editannya sendiri
-    if text.startswith("ℹ️ **DETAILED") or text.startswith("🏓 Pong!") or text.startswith("👋 Berhasil") or text.startswith("✅ Berhasil"):
+    if text.startswith("ℹ️ **DETAILED") or text.startswith("🏓 Pong!") or text.startswith("👋 Berhasil") or text.startswith("✅ Berhasil") or text.startswith("📢 **[BROADCAST PROGRESS]**"):
         return
 
     # Bot HANYA memproses pesan yang diawali tanda titik
@@ -102,7 +104,6 @@ async def handler(event):
         
         sent = await event.respond("🔍 Membongkar database profil target...")
         try:
-            # 1. Tarik target ID
             if event.is_reply:
                 reply_msg = await event.get_reply_message()
                 target_id = reply_msg.sender_id
@@ -120,21 +121,17 @@ async def handler(event):
                 user_obj = await tele.get_me()
                 target_id = user_obj.id
 
-            # 2. SENJATA MEKANIK: Paksa Telegram kirim ulang cache participant grup biar tersinkronisasi
             if not user_obj and not event.is_private:
                 logger.info(f"🔄 Sinkronisasi ulang member grup {event.chat_id} untuk memancing ID {target_id}...")
                 try:
-                    # Ambil list partisipan grup saat ini, Telethon otomatis nyatet entitas mereka semua ke database session
                     await tele.get_participants(event.chat_id, limit=200)
                 except Exception as sync_err:
                     logger.warning(f"Gagal melakukan sinkronisasi otomatis grup: {sync_err}")
 
-            # 3. Ambil Entitas murni pasca sinkronisasi cache
             if not user_obj:
                 try:
                     user_obj = await tele.get_entity(target_id)
                 except Exception:
-                    # Jalur darurat Pyrogram jika Telethon bener-bener mentok
                     try:
                         pyro_user = await pyro.get_users(target_id)
                         user_obj = await tele.get_entity(pyro_user.id)
@@ -145,7 +142,6 @@ async def handler(event):
                 await sent.edit("❌ **Gagal mengambil entitas target!** Akun target tidak merespon sistem sinkronisasi grup.")
                 return
 
-            # Tarik detail data bio dan jumlah foto profil
             full_user = await tele(GetFullUserRequest(id=user_obj.id))
             photos = await tele.get_profile_photos(user_obj.id, limit=0)
             
@@ -179,11 +175,27 @@ async def handler(event):
                     if participant.is_creator:
                         group_status = "Pemilik Grup (Creator) 👑"
                     elif participant.is_admin:
-                        group_status = f"Admin Grup 🛠️ (Custom Title: {participant.title or 'Ga ada'})"
+                        title = participant.title if hasattr(participant, 'title') else None
+                        group_status = f"Admin Grup 🛠️ (Custom Title: {title or 'Ga ada'})"
                     else:
                         group_status = "Member Biasa 👤"
-                except Exception:
-                    group_status = "Gagal mendeteksi status grup"
+                except Exception as perm_err:
+                    logger.warning(f"Gagal get_permissions standar: {perm_err}. Mencoba fallback channel...")
+                    try:
+                        from telethon.tl.functions.channels import GetParticipantRequest
+                        from telethon.tl.types import ChannelParticipantCreator, ChannelParticipantAdmin
+                        
+                        channel_part = await tele(GetParticipantRequest(channel=event.chat_id, participant=user_obj.id))
+                        if isinstance(channel_part.participant, ChannelParticipantCreator):
+                            group_status = "Pemilik Grup (Creator) 👑"
+                        elif isinstance(channel_part.participant, ChannelParticipantAdmin):
+                            title = channel_part.participant.rank or "Ga ada"
+                            group_status = f"Admin Grup 🛠️ (Custom Title: {title})"
+                        else:
+                            group_status = "Member Biasa 👤"
+                    except Exception as final_err:
+                        logger.error(f"Gagal total deteksi jabatan: {final_err}")
+                        group_status = "Member Biasa / Hidden Admin 👤"
 
             info_text = (
                 "ℹ️ **DETAILED USER INFORMATION**\n"
@@ -214,6 +226,103 @@ async def handler(event):
         except Exception as e:
             logger.error(f"Detailed Info error: {e}")
             await sent.edit(f"❌ **Gagal membongkar info detil:** `{e}`")
+
+    # ==================== PERINTAH BROADCAST KHUSUS GRUP (FIX ONLY GROUPS) ====================
+    elif text.startswith(".bc"):
+        parts = text.split(" ", 1)
+        bc_msg = parts[1].strip() if len(parts) > 1 else ""
+        
+        broadcast_content = None
+        is_media = False
+        
+        if event.is_reply:
+            broadcast_content = await event.get_reply_message()
+            is_media = True
+            if bc_msg:
+                broadcast_content.message = bc_msg
+        else:
+            if not bc_msg:
+                await event.respond("❌ **Gagal:** Masukkan pesan setelah perintah atau reply ke media!\nContoh: `.bc Halo Semua Grup!`")
+                return
+            broadcast_content = bc_msg
+
+        sent = await event.respond("📢 **[BROADCAST GRUP]** Mengumpulkan daftar grup aktif...")
+        
+        success_count = 0
+        fail_count = 0
+        start_time = time.monotonic()
+        
+        try:
+            dialogs = await tele.get_dialogs()
+        except Exception as e:
+            logger.error(f"Gagal memuat dialog list: {e}")
+            await sent.edit(f"❌ **Gagal memuat daftar chat:** `{e}`")
+            return
+
+        # FILTER KHUSUS: Hanya masukkan tipe dialog yang berwujud Grup atau Supergroup (Skip DM / Channel)
+        targets = [d for d in dialogs if d.is_group]
+        total_targets = len(targets)
+        
+        if total_targets == 0:
+            await sent.edit("❌ **Gagal:** Akun lo tidak terdeteksi berada di dalam grup manapun saat ini.")
+            return
+
+        await sent.edit(f"📢 **[BROADCAST PROGRESS]**\nMemulai pengiriman khusus ke `{total_targets}` Grup...")
+
+        for index, target in enumerate(targets, start=1):
+            try:
+                if is_media:
+                    await tele.send_message(target.id, broadcast_content)
+                else:
+                    await tele.send_message(target.id, broadcast_content, link_preview=False)
+                
+                success_count += 1
+                logger.info(f"🚀 [BC GROUP SUCCESS] Terkirim ke grup -> {target.name} (ID: {target.id})")
+                
+                # Update status log berkala setiap kelipatan 3 grup
+                if index % 3 == 0 or index == total_targets:
+                    await sent.edit(
+                        f"📢 **[BROADCAST GRUP PROGRESS]**\n"
+                        f"───────────────────\n"
+                        f"🔄 Progress: `{index}/{total_targets}` grup\n"
+                        f"✅ Sukses: `{success_count}`\n"
+                        f"❌ Gagal: `{fail_count}`\n"
+                        f"───────────────────\n"
+                        f"⚡ *Sedang menyebar ke grup-grup, tunggu sebentar...*"
+                    )
+                
+                # Jeda aman anti muting Telegram
+                await asyncio.sleep(0.6)
+
+            except FloodWaitError as flood:
+                logger.warning(f"⚠️ Terkena FloodWait! Istirahat {flood.seconds} detik...")
+                await asyncio.sleep(flood.seconds + 2)
+                try:
+                    if is_media: await tele.send_message(target.id, broadcast_content)
+                    else: await tele.send_message(target.id, broadcast_content, link_preview=False)
+                    success_count += 1
+                except Exception:
+                    fail_count += 1
+
+            except Exception as err:
+                logger.debug(f"❌ [BC GROUP SKIPPED] Lewati grup {target.name}: {err}")
+                fail_count += 1
+                continue
+
+        duration = round(time.monotonic() - start_time)
+        
+        report_text = (
+            "✅ **BROADCAST GRUP SELESAI LENGKAP**\n"
+            "──────────────────────────────\n"
+            f"📊 **Total Target Grup:** `{total_targets} grup`\n"
+            f"✨ **Berhasil Terkirim:** `{success_count} grup`\n"
+            f"❌ **Gagal/Dilewati:** `{fail_count} grup`\n"
+            f"⏱️ **Total Waktu Kerja:** `{duration} detik`\n"
+            "──────────────────────────────\n"
+            "📢 *Semua pesan khusus grup telah disebarkan bersih tanpa masuk DM personal.*"
+        )
+        await sent.edit(report_text)
+        logger.info("👉 [BROADCAST GROUP COMPLETE] Selesai sebar grup.")
 
 async def main():
     global call, pyro
