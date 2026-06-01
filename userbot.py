@@ -94,24 +94,34 @@ async def handler(event):
                     try: getattr(call, cache_attr).remove(chat_id)
                     except: pass
 
-    # ==================== PERINTAH INFO (SUPER DETAIL) ====================
+    # ==================== PERINTAH INFO (SUPER DETAIL - BYPASS CACHE) ====================
     elif text.startswith(".info"):
         parts = text.split(" ", 1)
-        target = None
+        user_obj = None
         
-        if event.is_reply:
-            reply_msg = await event.get_reply_message()
-            target = reply_msg.sender_id
-        elif len(parts) > 1:
-            target = parts[1].strip()
-            if target.isdigit():
-                target = int(target)
-        else:
-            target = "me"
-            
         sent = await event.respond("🔍 Membongkar database profil target...")
         try:
-            user_obj = await tele.get_entity(target)
+            # 1. Jika me-reply pesan orang lain
+            if event.is_reply:
+                reply_msg = await event.get_reply_message()
+                user_obj = await reply_msg.get_sender() # Ambil entitas lengkap langsung dari pesan
+                
+            # 2. Jika menyertakan @username atau ID angka setelah spasi
+            elif len(parts) > 1:
+                target = parts[1].strip()
+                if target.isdigit():
+                    target = int(target)
+                user_obj = await tele.get_entity(target)
+                
+            # 3. Jika hanya mengetik .info saja (cek profil sendiri)
+            else:
+                user_obj = await tele.get_me()
+
+            if not user_obj:
+                await sent.edit("❌ Gagal mengambil data user target!")
+                return
+
+            # Ambil detail tambahan dan foto
             full_user = await tele(GetFullUserRequest(id=user_obj.id))
             photos = await tele.get_profile_photos(user_obj.id, limit=0)
             
