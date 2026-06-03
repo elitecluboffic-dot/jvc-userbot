@@ -1,11 +1,13 @@
 import os
 import time
 import asyncio
+import random
 import logging
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.tl.functions.users import GetFullUserRequest
-from telethon.tl.types import Dialog, Channel, Chat, User
+from telethon.tl.functions.messages import SetTypingRequest
+from telethon.tl.types import SendMessageTypingAction, Dialog, Channel, Chat, User
 from telethon.errors import FloodWaitError
 from pyrogram import Client as PyroClient
 from pyrogram.raw.functions.phone import LeaveGroupCall
@@ -13,19 +15,152 @@ from pyrogram.raw.types import InputGroupCall
 from pytgcalls import PyTgCalls
 from pytgcalls.types import MediaStream
 
+# Ambil Config Utama dari Railway Env
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 TELE_SESS = os.getenv("SESSION_STRING_1", "").strip()
 PYRO_SESS = os.getenv("PYRO_SESSION", "").strip()
 
+# Ambil list token bot klonengan (Dipisahkan pakai tanda koma di Railway Env)
+RAW_TOKENS = os.getenv("BOT_TOKENS", "").strip()
+BOT_TOKENS = [t.strip() for t in RAW_TOKENS.split(",") if t.strip()]
+
+# =====================================================================
+# ⚠️ PENGATURAN GRUP & BACOTAN SUPER RANDOM (NO CRYPTO)
+# =====================================================================
+TARGET_GROUP_ID = -1002785202346  # ID grup tujuan lu (CARI_CRUSH_ONLINE)
+AUTO_CHAT_INTERVAL = 600          # Jeda kirim chat (600 detik = 10 menit sekali)
+
+LIST_OBROLAN = [
+    # --- Sapaan / Absen / Nyari Temen Chat ---
+    "p",
+    "P",
+    "gimana gess? aman semua kan?",
+    "sepi amat dah wkwk pada ke mana nih orang-orang",
+    "gess absen dulu dong yang lagi online jam segini 👋",
+    "hadir gess, baru mantau lagi nih",
+    "ada yang lagi free gak? nemenin ngobrol sini",
+    "halo semuanya, selamat beraktivitas ya gess",
+    "ooii bro, lagi pada sibuk ya?",
+    "yuk ramein yuk, jangan biarkan grup ini mati suri 😂",
+    "turu kabeeh ta iki? 😴",
+    
+    # --- Topik Game / Main Bareng (Mabar) ---
+    "mabar gak nih gess? gabut bener gua asli",
+    "ada yang main ml gak? login lah gass full team",
+    "bntr lagi reset season ya? pusing gua dapet tim publik ampas mulu",
+    "ada rekomendasi game offline yang seru gak di HP? mau nyoba",
+    "pubg gass lah, ketik 1 yang mau ikut ngerush",
+    "hoki bener gua tadi malem main game wkwk",
+    "lagi males main game kompetitif, bikin emosi doang wkwk",
+    
+    # --- Topik Film / Netflix / Sosmed ---
+    "ada rekomendasi film bagus gak di netflix? yang genrenya thriller/horor",
+    "eh beneran film yang kemarin rame itu seru? mau nonton tapi mager",
+    "lagi rame banget ya di tiktok masalah itu, ada yang ngikutin?",
+    "rekomendasi series yang sekali duduk langsung tamat dong gess",
+    "capek banget scrol sosmed isinya drama mulu wkwk",
+    
+    # --- Topik Kopi / Makan / Nongkrong / Cuaca ---
+    "ngopi dulu gess biar ga panik batin☕",
+    "cuaca di tempat kalian gimana? tempat gua ujan deras bener",
+    "enaknya jam segini makan apa ya? rekomendasi kuliner dong",
+    "rekomendasi tempat nongkrong yang free wifi dan kopinya enak dong gess",
+    "laper bener bjir, padahal tadi udah makan",
+    "es teh manis emang paling juara sih kalau cuaca lagi panas gini",
+    "pada suka kopi hitam apa kopi susu nih gess?",
+    
+    # --- Respon Pendek / Khas Anak Tongkrongan ---
+    "wkwk gokil sih emang",
+    "gas lah ga pake lama",
+    "yoii bro santai aja haha",
+    "seriusan lu? wkwk",
+    "skip dulu deh kalo itu wkwk",
+    "mantap jaya 🔥",
+    "up dulu lah biar ga tenggelam nih grup 🚀",
+    "males ngetik panjang, intinya gas aja lah wkwk",
+    "bisa gitu ya wkwkwk",
+    "nah eta!",
+    "aman aman aman 👍",
+    "oke siap gas",
+    "wkwkwk joss lah",
+    "bener juga sih",
+    "lah iya kah?",
+    "wkwk parah sih",
+    "bisa jadi, bisa jadi 🤔",
+    "walah wkwk",
+    "gasskeun!",
+    
+    # --- Topik Gabut / Random Banget ---
+    "enaknya jam segini ngapain ya? gabut bener asli",
+    "jaringan lagi rada ngadat nih tempat gua, pantesan agak telat bales",
+    "ada yang lagi dengerin musik gak? bagi judul lagu yang enak dong",
+    "ngantuk bener bjir, padahal semalem tidur cepet",
+    "capek-capek kerja, ujung-ujungnya duitnya habis buat jajan doang wkwk",
+    "random bener pikiran gua jam segini wkwk",
+    "hidup lagi capek-capeknya, malah nemu ginian wkwk"
+]
+# =====================================================================
+
 logging.basicConfig(format="%(asctime)s | %(levelname)s | %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Klien Utama (Userbot Akun Lu @bitcoinbim)
 tele = TelegramClient(StringSession(TELE_SESS), API_ID, API_HASH)
 pyro = None
 call = None
 
-# Ambil perintah murni yang keluar dari akun kita sendiri
+# List untuk menampung semua bot klonengan yang aktif
+bot_clients = []
+
+# Loop Otomatis - DIKENDALIKAN OLEH BOT-BOT CLONE SECARA ACAK
+async def multi_bot_chat_loop():
+    if not bot_clients:
+        logger.warning("⚠️ [AUTO-CHAT] List BOT_TOKENS kosong! Fitur peramai grup dinonaktifkan.")
+        return
+        
+    await asyncio.sleep(20) # Jeda aman nunggu semua mesin nyala sempurna
+    logger.info(f"🤖 [AUTO-CHAT] Sukses mengaktifkan {len(bot_clients)} Bot Klonengan untuk meramaikan grup!")
+    
+    while True:
+        try:
+            # 1. Pilih salah satu bot clone secara acak
+            bot_terpilih = random.choice(bot_clients)
+            
+            # 2. Pilih teks obrolan acak
+            pesan_acak = random.choice(LIST_OBROLAN)
+            
+            # 3. Kirim efek typing asli ke server Telegram
+            durasi_typing = random.randint(3, 6)
+            logger.info(f"⏳ [TYPING] Bot Clone memicu status mengetik selama {durasi_typing} detik...")
+            
+            try:
+                # Pastikan bot sudah diajak gabung ke grup biar method ini gak eror
+                await bot_terpilih(SetTypingRequest(
+                    peer=TARGET_GROUP_ID,
+                    action=SendMessageTypingAction()
+                ))
+            except Exception as tx:
+                logger.warning(f"⚠️ Gagal memicu status typing (Pastikan bot sudah masuk grup): {tx}")
+                
+            # Tahan proses selama durasi mengetik biar terlihat natural
+            await asyncio.sleep(durasi_typing)
+            
+            # 4. Kirim pesan asli setelah efek typing selesai
+            await bot_terpilih.send_message(TARGET_GROUP_ID, pesan_acak)
+            logger.info(f"🤖 [AUTO-CHAT] Bot Clone sukses ngirim teks: '{pesan_acak}'")
+            
+        except Exception as e:
+            logger.error(f"❌ [AUTO-CHAT ERROR] Gagal kirim chat lewat bot clone: {e}")
+            
+        # Kasih bumbu jeda acak harian biar waktunya bervariasi
+        jeda_acak = random.randint(10, 60)
+        total_jeda = AUTO_CHAT_INTERVAL + jeda_acak
+        logger.info(f"💤 Cooldown loop... tidur selama {total_jeda} detik.")
+        await asyncio.sleep(total_jeda)
+
+
+# ==================== HANDLER COMMAND USERBOT LU (@bitcoinbim) ====================
 @tele.on(events.NewMessage(outgoing=True))
 async def handler(event):
     if not event.raw_text:
@@ -96,7 +231,7 @@ async def handler(event):
                     try: getattr(call, cache_attr).remove(chat_id)
                     except: pass
 
-    # ==================== PERINTAH INFO (SUPER DETAIL - FORCE SYNC CHAT MURNI) ====================
+    # ==================== PERINTAH INFO (SUPER DETAIL) ====================
     elif text.startswith(".info"):
         parts = text.split(" ", 1)
         user_obj = None
@@ -227,7 +362,7 @@ async def handler(event):
             logger.error(f"Detailed Info error: {e}")
             await sent.edit(f"❌ **Gagal membongkar info detil:** `{e}`")
 
-    # ==================== PERINTAH BROADCAST KHUSUS GRUP (FIX ONLY GROUPS + SAFELOG) ====================
+    # ==================== PERINTAH BROADCAST KHUSUS GRUP ====================
     elif text.startswith(".bc"):
         parts = text.split(" ", 1)
         bc_msg = parts[1].strip() if len(parts) > 1 else ""
@@ -331,7 +466,6 @@ async def handler(event):
             "📢 *Semua pesan khusus grup telah disebarkan bersih tanpa masuk DM personal.*"
         )
         
-        # JALUR AMAN REPORT AKHIR: Anti rpcerrorlist.MessageIdInvalidError
         try:
             await sent.edit(report_text)
         except Exception:
@@ -340,8 +474,23 @@ async def handler(event):
         logger.info("👉 [BROADCAST GROUP COMPLETE] Selesai sebar grup.")
 
 async def main():
-    global call, pyro
-    logger.info("🚀 Starting...")
+    global call, pyro, bot_clients
+    logger.info("🚀 Starting Engines...")
+    
+    # Menyalakan semua Bot Clone yang didaftarkan di BOT_TOKENS
+    for idx, token in enumerate(BOT_TOKENS, start=1):
+        try:
+            b_client = TelegramClient(f'bot_session_{idx}', API_ID, API_HASH)
+            await b_client.start(bot_token=token)
+            bot_clients.append(b_client)
+            logger.info(f"✅ Bot Clone Ke-{idx} Sukses Terkoneksi!")
+        except Exception as e:
+            logger.error(f"❌ Gagal menyalakan Bot Clone ke-{idx}: {e}")
+            
+    # Aktifkan loop chat otomatis jika ada bot clone yang ready
+    if bot_clients:
+        asyncio.create_task(multi_bot_chat_loop())
+        
     pyro = PyroClient(
         name="voice",
         api_id=API_ID,
@@ -352,6 +501,7 @@ async def main():
     await pyro.start()
     await call.start()
     logger.info("✅ PyTgCalls Engine ready")
+    
     await tele.start()
     me = await tele.get_me()
     logger.info(f"🤖 Login Terverifikasi: {me.first_name} (@{me.username})")
