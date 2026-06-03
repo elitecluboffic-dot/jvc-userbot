@@ -28,7 +28,7 @@ BOT_TOKENS = [t.strip() for t in RAW_TOKENS.split(",") if t.strip()]
 # =====================================================================
 # ⚠️ PENGATURAN GRUP & BACOTAN SUPER RANDOM (NO CRYPTO)
 # =====================================================================
-TARGET_GROUP_ID = -1002785202346  # ID grup tujuan lu (CARI_CRUSH_ONLINE)
+TARGET_GROUP_ID = "@CARI_CRUSH_ONLINE"  # ID grup tujuan lu (CARI_CRUSH_ONLINE)
 AUTO_CHAT_INTERVAL = 600          # Jeda kirim chat (600 detik = 10 menit sekali)
 
 LIST_OBROLAN = [
