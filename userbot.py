@@ -335,22 +335,22 @@ async def handler(event):
             info_text = (
                 "ℹ️ **DETAILED USER INFORMATION**\n"
                 "──────────────────────────────\n"
-                f"👤 **Nama Lengkap:** `{full_name}`\n"
-                f"🆔 **User ID:** `{user_obj.id}`\n"
-                f"🏷️ **Username:** {username}\n"
-                f"🌐 **Data Center (DC):** `DC-{dc_id}`\n"
+                "👤 **Nama Lengkap:** `{full_name}`\n"
+                "🆔 **User ID:** `{user_obj.id}`\n"
+                "🏷️ **Username:** {username}\n"
+                "🌐 **Data Center (DC):** `DC-{dc_id}`\n"
                 "──────────────────────────────\n"
-                f"📊 **Jabatan di Grup Ini:**\n"
-                f"└─ `{group_status}`\n\n"
-                f"⏱️ **Status Keaktifan:**\n"
-                f"└─ `{status_text}`\n\n"
-                f"🔒 **Aspek Keamanan & Fitur:**\n"
-                f"├─ Premium: {is_premium}\n"
-                f"├─ Akun Bot: {is_bot}\n"
-                f"├─ Status Scam: {is_scam}\n"
-                f"└─ Status Fake: {is_fake}\n\n"
-                f"📸 **Jumlah Foto Profil:** `{len(photos)} foto`\n"
-                f"📝 **Bio/About:**\n"
+                "📊 **Jabatan di Grup Ini:**\n"
+                "└─ `{group_status}`\n\n"
+                "⏱️ **Status Keaktifan:**\n"
+                "└─ `{status_text}`\n\n"
+                "🔒 **Aspek Keamanan & Fitur:**\n"
+                "├─ Premium: {is_premium}\n"
+                "├─ Akun Bot: {is_bot}\n"
+                "├─ Status Scam: {is_scam}\n"
+                "└─ Status Fake: {is_fake}\n\n"
+                "📸 **Jumlah Foto Profil:** `{len(photos)} foto`\n"
+                "📝 **Bio/About:**\n"
                 f"`{bio}`\n"
                 "──────────────────────────────\n"
                 f"🔗 **Link DM Instan:** [Klik Disini](tg://user?id={user_obj.id})"
@@ -491,11 +491,13 @@ async def main():
     if bot_clients:
         asyncio.create_task(multi_bot_chat_loop())
         
+    # INISIALISASI PYROCLIENT + ANTI EROR PEER INVALID (NO UPDATES)
     pyro = PyroClient(
         name="voice",
         api_id=API_ID,
         api_hash=API_HASH,
         session_string=PYRO_SESS,
+        no_updates=True  # <-- SOLUSI DISINI: Mematikan update chat masuk biar gak eror di log Railway
     )
     call = PyTgCalls(pyro)
     await pyro.start()
