@@ -105,6 +105,12 @@ LIST_OBROLAN = [
 logging.basicConfig(format="%(asctime)s | %(levelname)s | %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Membungkam log update internal Telethon & Pyrogram agar log Railway mulus
+logging.getLogger("telethon.extensions.html").setLevel(logging.WARNING)
+logging.getLogger("telethon.network.mtprotosender").setLevel(logging.WARNING)
+logging.getLogger("pyrogram.client").setLevel(logging.WARNING)
+logging.getLogger("pyrogram.session").setLevel(logging.WARNING)
+
 # Klien Utama (Userbot Akun Lu @bitcoinbim)
 tele = TelegramClient(StringSession(TELE_SESS), API_ID, API_HASH)
 pyro = None
@@ -187,9 +193,24 @@ async def handler(event):
 
     # ==================== PERINTAH JOIN VC ====================
     elif text == ".jvc":
+        chat_id = event.chat_id
         try:
+            # === TRIK JITU: Pancing entitas ke database lokal Pyrogram saat runtime ===
+            try:
+                # Dapatkan entitas grup menggunakan Telethon (yang cachenya lengkap)
+                input_entity = await tele.get_input_entity(chat_id)
+                # Paksa masukkan entitas tersebut ke SQLite Pyrogram agar di-resolve instan
+                await pyro.storage.save_peer(
+                    chat_id,
+                    input_entity.access_hash,
+                    "channel" if str(chat_id).startswith("-100") else "chat"
+                )
+                logger.info(f"✅ [PEER-RESOLVER] Berhasil mendaftarkan ID {chat_id} ke database Pyrogram.")
+            except Exception as pe:
+                logger.warning(f"⚠️ [PEER-RESOLVER] Gagal sinkronisasi otomatis entitas grup: {pe}")
+
             await call.play(
-                event.chat_id,
+                chat_id,
                 MediaStream("anullsrc", ffmpeg_parameters="-f lavfi"),
             )
             await event.respond("✅ Berhasil join ke obrolan suara!")
@@ -335,22 +356,22 @@ async def handler(event):
             info_text = (
                 "ℹ️ **DETAILED USER INFORMATION**\n"
                 "──────────────────────────────\n"
-                "👤 **Nama Lengkap:** `{full_name}`\n"
-                "🆔 **User ID:** `{user_obj.id}`\n"
-                "🏷️ **Username:** {username}\n"
-                "🌐 **Data Center (DC):** `DC-{dc_id}`\n"
+                f"👤 **Nama Lengkap:** `{full_name}`\n"
+                f"🆔 **User ID:** `{user_obj.id}`\n"
+                f"🏷️ **Username:** {username}\n"
+                f"🌐 **Data Center (DC):** `DC-{dc_id}`\n"
                 "──────────────────────────────\n"
-                "📊 **Jabatan di Grup Ini:**\n"
-                "└─ `{group_status}`\n\n"
-                "⏱️ **Status Keaktifan:**\n"
-                "└─ `{status_text}`\n\n"
-                "🔒 **Aspek Keamanan & Fitur:**\n"
-                "├─ Premium: {is_premium}\n"
-                "├─ Akun Bot: {is_bot}\n"
-                "├─ Status Scam: {is_scam}\n"
-                "└─ Status Fake: {is_fake}\n\n"
-                "📸 **Jumlah Foto Profil:** `{len(photos)} foto`\n"
-                "📝 **Bio/About:**\n"
+                f"📊 **Jabatan di Grup Ini:**\n"
+                f"└─ `{group_status}`\n\n"
+                f"⏱️ **Status Keaktifan:**\n"
+                f"└─ `{status_text}`\n\n"
+                f"🔒 **Aspek Keamanan & Fitur:**\n"
+                f"├─ Premium: {is_premium}\n"
+                f"├─ Akun Bot: {is_bot}\n"
+                f"├─ Status Scam: {is_scam}\n"
+                f"└─ Status Fake: {is_fake}\n\n"
+                f"📸 **Jumlah Foto Profil:** `{len(photos)} foto`\n"
+                f"📝 **Bio/About:**\n"
                 f"`{bio}`\n"
                 "──────────────────────────────\n"
                 f"🔗 **Link DM Instan:** [Klik Disini](tg://user?id={user_obj.id})"
@@ -497,7 +518,7 @@ async def main():
         api_id=API_ID,
         api_hash=API_HASH,
         session_string=PYRO_SESS,
-        no_updates=True  # <-- SOLUSI DISINI: Mematikan update chat masuk biar gak eror di log Railway
+        no_updates=True  # <-- Mematikan update chat masuk agar log clean
     )
     call = PyTgCalls(pyro)
     await pyro.start()
