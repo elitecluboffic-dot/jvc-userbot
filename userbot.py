@@ -105,7 +105,7 @@ LIST_OBROLAN = [
 logging.basicConfig(format="%(asctime)s | %(levelname)s | %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Membungkam log update internal Telethon & Pyrogram agar log Railway mulus
+# Membungkam log update internal Telethon & Pyrogram agar log Railway mulus dan bersih
 logging.getLogger("telethon.extensions.html").setLevel(logging.WARNING)
 logging.getLogger("telethon.network.mtprotosender").setLevel(logging.WARNING)
 logging.getLogger("pyrogram.client").setLevel(logging.WARNING)
@@ -119,7 +119,44 @@ call = None
 # List untuk menampung semua bot klonengan yang aktif
 bot_clients = []
 
-# Loop Otomatis - DIKENDALIKAN OLEH BOT-BOT CLONE SECARA ACAK
+async def resolve_peer_pyro(chat_id):
+    """
+    Sistem Pemancing Cache RAM Pyrogram.
+    Mengingat Pyrogram menggunakan MemoryStorage saat string session di-load,
+    kita tidak bisa mengutak-atik SQLite internal secara langsung. Kita gunakan
+    fungsi bawaan agar Telegram mengirimkan entity hash secara resmi ke RAM Cache.
+    """
+    # 1. Coba deteksi langsung (Apakah Pyrogram sudah kenal ID ini di RAM?)
+    try:
+        await pyro.get_chat(chat_id)
+        logger.info(f"✅ [PEER-RESOLVER] Chat ID {chat_id} langsung dikenali RAM Pyrogram.")
+        return True
+    except Exception:
+        logger.info(f"🔄 [PEER-RESOLVER] Chat ID {chat_id} belum dikenal. Memulai pemancingan dialog...")
+
+    # 2. Paksa sinkronisasi Dialog list (Membaca 100 chat terakhir untuk memancing hash)
+    try:
+        async for dialog in pyro.get_dialogs(limit=100):
+            if dialog.chat.id == chat_id:
+                logger.info(f"🎯 [PEER-RESOLVER] Sukses mendaftarkan {dialog.chat.title} ke RAM Pyrogram via dialog scan!")
+                return True
+    except Exception as e:
+        logger.warning(f"⚠️ [PEER-RESOLVER] Gagal memancing dialog list: {e}")
+
+    # 3. Solusi Pamungkas: Ambil detail grup via Telethon, lalu resolve username di Pyrogram
+    try:
+        entity = await tele.get_entity(chat_id)
+        if hasattr(entity, 'username') and entity.username:
+            username_target = entity.username
+            logger.info(f"🔗 [PEER-RESOLVER] Mengambil entitas via username @{username_target}...")
+            await pyro.get_chat(username_target)
+            logger.info(f"🎯 [PEER-RESOLVER] Sukses mendaftarkan @{username_target} ke RAM Pyrogram!")
+            return True
+    except Exception as e:
+        logger.error(f"❌ [PEER-RESOLVER] Gagal total menyelesaikan peer ID: {e}")
+
+    return False
+
 async def multi_bot_chat_loop():
     if not bot_clients:
         logger.warning("⚠️ [AUTO-CHAT] List BOT_TOKENS kosong! Fitur peramai grup dinonaktifkan.")
@@ -220,19 +257,8 @@ async def handler(event):
     elif text == ".jvc":
         chat_id = event.chat_id
         try:
-            # === TRIK JITU: Pancing entitas ke database lokal Pyrogram saat runtime ===
-            try:
-                # Dapatkan entitas grup menggunakan Telethon (yang cachenya lengkap)
-                input_entity = await tele.get_input_entity(chat_id)
-                # Paksa masukkan entitas tersebut ke SQLite Pyrogram agar di-resolve instan
-                await pyro.storage.save_peer(
-                    chat_id,
-                    input_entity.access_hash,
-                    "channel" if str(chat_id).startswith("-100") else "chat"
-                )
-                logger.info(f"✅ [PEER-RESOLVER] Berhasil mendaftarkan ID {chat_id} ke database Pyrogram.")
-            except Exception as pe:
-                logger.warning(f"⚠️ [PEER-RESOLVER] Gagal sinkronisasi otomatis entitas grup: {pe}")
+            # === RESOLVE PEER SECARA DINAMIS TANPA CRASH ===
+            await resolve_peer_pyro(chat_id)
 
             await call.play(
                 chat_id,
@@ -519,6 +545,7 @@ async def handler(event):
             
         logger.info("👉 [BROADCAST GROUP COMPLETE] Selesai sebar grup.")
 
+
 async def main():
     global call, pyro, bot_clients
     logger.info("🚀 Starting Engines...")
@@ -549,6 +576,15 @@ async def main():
     await pyro.start()
     await call.start()
     logger.info("✅ PyTgCalls Engine ready")
+    
+    # --- PROAKTIF PEMANCING CACHE SAAT STARTUP (SINKRONISASI RAM CACHE) ---
+    logger.info("🔄 Menyinkronkan daftar obrolan Pyrogram ke RAM...")
+    try:
+        async for dialog in pyro.get_dialogs(limit=100):
+            pass
+        logger.info("✅ Sinkronisasi RAM MemoryStorage sukses!")
+    except Exception as e:
+        logger.warning(f"⚠️ Gagal menyinkronkan obrolan di awal: {e}")
     
     await tele.start()
     me = await tele.get_me()
