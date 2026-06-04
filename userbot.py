@@ -96,7 +96,7 @@ LIST_OBROLAN = [
     "jaringan lagi rada ngadat nih tempat gua, pantesan agak telat bales",
     "ada yang lagi dengerin musik gak? bagi judul lagu yang enak dong",
     "ngantuk bener bjir, padahal semalem tidur cepet",
-    "capek-capek kerja, ujung-ujungnya duitnya habis buat jajan doang wkwk",
+    "capek-capek kerja, ujung-undunya duitnya habis buat jajan doang wkwk",
     "random bener pikiran gua jam segini wkwk",
     "hidup lagi capek-capeknya, malah nemu ginian wkwk"
 ]
@@ -129,40 +129,65 @@ async def multi_bot_chat_loop():
     logger.info(f"🤖 [AUTO-CHAT] Sukses mengaktifkan {len(bot_clients)} Bot Klonengan untuk meramaikan grup!")
     
     while True:
-        try:
-            # 1. Pilih salah satu bot clone secara acak
-            bot_terpilih = random.choice(bot_clients)
+        if not bot_clients:
+            logger.warning("⚠️ [AUTO-CHAT] Semua bot klonengan telah ter-banned atau tidak memiliki akses grup! Menghentikan loop.")
+            break
             
-            # 2. Pilih teks obrolan acak
-            pesan_acak = random.choice(LIST_OBROLAN)
-            
-            # 3. Kirim efek typing asli ke server Telegram
-            durasi_typing = random.randint(3, 6)
-            logger.info(f"⏳ [TYPING] Bot Clone memicu status mengetik selama {durasi_typing} detik...")
-            
+        bot_terpilih = None
+        sukses = False
+        percobaan = 0
+        max_percobaan = len(bot_clients)
+        
+        # Lakukan pencarian bot clone sehat sampai berhasil mengirim pesan
+        while percobaan < max_percobaan and bot_clients:
             try:
-                # Pastikan bot sudah diajak gabung ke grup biar method ini gak eror
-                await bot_terpilih(SetTypingRequest(
-                    peer=TARGET_GROUP_ID,
-                    action=SendMessageTypingAction()
-                ))
-            except Exception as tx:
-                logger.warning(f"⚠️ Gagal memicu status typing (Pastikan bot sudah masuk grup): {tx}")
+                bot_terpilih = random.choice(bot_clients)
+                pesan_acak = random.choice(LIST_OBROLAN)
+                durasi_typing = random.randint(3, 6)
                 
-            # Tahan proses selama durasi mengetik biar terlihat natural
-            await asyncio.sleep(durasi_typing)
-            
-            # 4. Kirim pesan asli setelah efek typing selesai
-            await bot_terpilih.send_message(TARGET_GROUP_ID, pesan_acak)
-            logger.info(f"🤖 [AUTO-CHAT] Bot Clone sukses ngirim teks: '{pesan_acak}'")
-            
-        except Exception as e:
-            logger.error(f"❌ [AUTO-CHAT ERROR] Gagal kirim chat lewat bot clone: {e}")
-            
+                # Coba kirim typing
+                try:
+                    await bot_terpilih(SetTypingRequest(
+                        peer=TARGET_GROUP_ID,
+                        action=SendMessageTypingAction()
+                    ))
+                    logger.info(f"⏳ [TYPING] Bot Clone sukses memicu status mengetik selama {durasi_typing} detik...")
+                except Exception as tx:
+                    err_msg = str(tx).lower()
+                    if "banned" in err_msg or "private" in err_msg or "permission" in err_msg or "chat_write_forbidden" in err_msg or "write in this chat" in err_msg:
+                        logger.warning(f"⚠️ [AUTO-CHAT] Bot Clone terdeteksi mati/banned saat mengetik ({tx}). Menghapus bot dari antrean aktif!")
+                        if bot_terpilih in bot_clients:
+                            bot_clients.remove(bot_terpilih)
+                        percobaan += 1
+                        continue # Langsung cari bot lain tanpa sleep panjang
+                    else:
+                        logger.warning(f"⚠️ Gagal memicu status typing (kendala ringan): {tx}")
+                
+                # Tahan proses selama durasi mengetik biar terlihat natural
+                await asyncio.sleep(durasi_typing)
+                
+                # Kirim pesan asli setelah efek typing selesai
+                await bot_terpilih.send_message(TARGET_GROUP_ID, pesan_acak)
+                logger.info(f"🤖 [AUTO-CHAT] Bot Clone sukses ngirim teks: '{pesan_acak}'")
+                sukses = True
+                break # Sukses! Keluar dari loop pencarian bot
+                
+            except Exception as e:
+                err_msg = str(e).lower()
+                if "banned" in err_msg or "private" in err_msg or "permission" in err_msg or "chat_write_forbidden" in err_msg or "write in this chat" in err_msg:
+                    logger.warning(f"⚠️ [AUTO-CHAT] Bot Clone terdeteksi mati/banned saat kirim chat ({e}). Menghapus bot dari antrean aktif!")
+                    if bot_terpilih in bot_clients:
+                        bot_clients.remove(bot_terpilih)
+                else:
+                    logger.error(f"❌ [AUTO-CHAT ERROR] Gagal kirim chat lewat bot clone: {e}")
+                
+                percobaan += 1
+                await asyncio.sleep(1) # Jeda kilat sebelum rolling ke bot selanjutnya
+                
         # Kasih bumbu jeda acak harian biar waktunya bervariasi
         jeda_acak = random.randint(10, 60)
         total_jeda = AUTO_CHAT_INTERVAL + jeda_acak
-        logger.info(f"💤 Cooldown loop... tidur selama {total_jeda} detik.")
+        logger.info(f"💤 Cooldown loop... tidur selama {total_jeda} detik. (Sisa bot klonengan aktif: {len(bot_clients)})")
         await asyncio.sleep(total_jeda)
 
 
