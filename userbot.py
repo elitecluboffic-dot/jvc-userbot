@@ -170,7 +170,6 @@ async def get_bio_safe(sender_id):
 
 
 def bio_mengandung_bahaya(bio: str) -> bool:
-    """Return True kalau bio ada link ATAU mention @username."""
     if not bio:
         return False
     if re.search(LINK_REGEX, bio, re.IGNORECASE):
@@ -200,7 +199,7 @@ async def auto_blacklist_gcast_handler(event):
 
         # 1. SCAN LINK DI ISI PESAN
         if re.search(LINK_REGEX, text, re.IGNORECASE):
-            await tele(DeleteMessagesRequest(peer=event.chat_id, id=[event.message.id], revoke=True))
+            await tele(DeleteMessagesRequest(event.chat_id, [event.message.id], revoke=True))
             logger.info(f"🗑️ [LINK-LOCKDOWN] Pesan berisi link dari {event.sender_id} DIHAPUS!")
             return
 
@@ -210,7 +209,7 @@ async def auto_blacklist_gcast_handler(event):
         has_keyword = any(kw in text_lower for kw in gcast_keywords)
 
         if is_forwarded or has_keyword:
-            await tele(DeleteMessagesRequest(peer=event.chat_id, id=[event.message.id], revoke=True))
+            await tele(DeleteMessagesRequest(event.chat_id, [event.message.id], revoke=True))
             logger.info(f"🗑️ [GCAST-BL] Pesan gikes dari {event.sender_id} DIHAPUS!")
             return
 
@@ -219,17 +218,15 @@ async def auto_blacklist_gcast_handler(event):
         if not sender or not hasattr(sender, 'id') or not isinstance(sender, User):
             return
 
-        # Cek username mengandung unsur link/bot
         user_uname = sender.username.lower() if sender.username else ""
         if any(x in user_uname for x in ["http", "t.me", ".com", ".net", ".id", ".org", "bot"]):
-            await tele(DeleteMessagesRequest(peer=event.chat_id, id=[event.message.id], revoke=True))
+            await tele(DeleteMessagesRequest(event.chat_id, [event.message.id], revoke=True))
             logger.info(f"🗑️ [USERNAME-BL] Pesan dari {sender.first_name} dihapus karena username mengandung link/bot!")
             return
 
-        # Cek bio — deteksi link DAN mention @
         bio = await get_bio_safe(sender.id)
         if bio_mengandung_bahaya(bio):
-            await tele(DeleteMessagesRequest(peer=event.chat_id, id=[event.message.id], revoke=True))
+            await tele(DeleteMessagesRequest(event.chat_id, [event.message.id], revoke=True))
             logger.info(f"🗑️ [BIO-LOCKDOWN] Pesan dari {sender.first_name} ({sender.id}) dihapus karena bio mengandung link/mention: {bio[:100]}")
             return
 
