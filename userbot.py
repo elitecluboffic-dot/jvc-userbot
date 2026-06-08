@@ -3,6 +3,7 @@ import time
 import asyncio
 import random
 import logging
+import re
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.tl.functions.users import GetFullUserRequest
@@ -30,6 +31,9 @@ BOT_TOKENS = [t.strip() for t in RAW_TOKENS.split(",") if t.strip()]
 # =====================================================================
 TARGET_GROUP_ID = "@CARI_CRUSH_ONLINE"  # ID/Username grup tujuan lu
 AUTO_CHAT_INTERVAL = 600          # Jeda kirim chat (600 detik = 10 menit sekali)
+
+# Regex untuk mencium keberadaan link di bio profil pengguna
+LINK_REGEX = r'(https?://[^\s]+|t\.me/[^\s]+|www\.[^\s]+)'
 
 LIST_OBROLAN = [
     "p", "P", "gimana gess? aman semua kan?", "sepi amat dah wkwk pada ke mana nih orang-orang",
@@ -165,49 +169,51 @@ async def multi_bot_chat_loop():
         await asyncio.sleep(total_jeda)
 
 
-# ==================== 🔥 NEW: HANDLER AUTO BLACKLIST GCAST/GIKES 🔥 ====================
+# ==================== 🔥 HANDLER AUTO BLACKLIST GCAST & LINK BIO 🔥 ====================
 @tele.on(events.NewMessage(incoming=True))
 async def auto_blacklist_gcast_handler(event):
-    # Pastikan ini adalah grup dan username/ID grupnya sesuai target lu
     if not event.is_group:
         return
         
     try:
         chat = await event.get_chat()
-        # Cek berdasarkan username (tanpa @) atau kecocokan string target group
         chat_username = f"@{chat.username}" if hasattr(chat, 'username') and chat.username else ""
         
         if TARGET_GROUP_ID.lower() != chat_username.lower():
             return # Skip kalau bukan di grup @CARI_CRUSH_ONLINE
             
-        # Abaikan kalau pesan dikirim oleh akun userbot lu sendiri biar ga bentrok
         if event.out:
             return
 
-        # Ambil teks pesan gikesnya
+        # -------------------------------------------------------------
+        # 1. AKSI DETEKSI GCAST / GIKES JAHANAM
+        # -------------------------------------------------------------
         text = event.raw_text.strip().lower() if event.raw_text else ""
-        
-        # PARAMETER DETEKSI GCAST / GIKES:
-        # 1. Pesan diteruskan (Forwarded) -> Ciri khas gcast bot / manual
         is_forwarded = event.message.fwd_from is not None
-        
-        # 2. Kata kunci indikator gcast/gikes jahanam
         gcast_keywords = ["gcast", "gikes", "broadcast", "ready p", "bantu up", "pm panel", "open bo"]
         has_keyword = any(kw in text for kw in gcast_keywords)
         
         if is_forwarded or has_keyword:
-            # Aksi 1: Hapus Pesan Gcast tersebut secara permanen dari grup
-            await tele(DeleteMessagesRequest(
-                id=[event.message.id],
-                revoke=True
-            ))
+            await tele(DeleteMessagesRequest(id=[event.message.id], revoke=True))
             logger.info(f"🗑️ [AUTO-BL-GCAST] Berhasil menghapus pesan gikes dari Sender ID: {event.sender_id}")
+            return # Selesai, ga perlu lanjut cek bio lagi kalau chatnya udah tewas
+
+        # -------------------------------------------------------------
+        # 2. AKSI DETEKSI LINK DI BIO PROFIL PENGGUNA (SILENT DELETE)
+        # -------------------------------------------------------------
+        sender = await event.get_sender()
+        if sender and hasattr(sender, 'id') and isinstance(sender, User):
+            # Ambil data profil lengkap sang pengirim untuk dibongkar bionya
+            full_user = await tele(GetFullUserRequest(id=sender.id))
+            bio = full_user.full_user.about
             
-            # Aksi 2: Kirim pemberitahuan log ke grup
-            await event.respond("⚠️ **fitur auto bl gcast aktif pesan telah terhapus**")
-            
+            # Jika user punya bio dan bionya terbukti memuat link aktif
+            if bio and re.search(LINK_REGEX, bio, re.IGNORECASE):
+                await tele(DeleteMessagesRequest(id=[event.message.id], revoke=True))
+                logger.info(f"🗑️ [AUTO-DEL-BIO] Pesan dari {sender.first_name} ({sender.id}) dihapus senyap karena ada link di bio: {bio}")
+
     except Exception as e:
-        logger.error(f"❌ [AUTO-BL-GCAST ERROR] Gagal eksekusi penghapusan gikes: {e}")
+        logger.error(f"❌ [AUTO-MOD-ERROR] Gagal eksekusi pengawasan grup: {e}")
 
 
 # ==================== HANDLER COMMAND USERBOT LU (@bitcoinbim) ====================
@@ -218,7 +224,7 @@ async def handler(event):
         
     text = event.raw_text.strip()
     
-    if text.startswith("ℹ️ **DETAILED") or text.startswith("🏓 Pong!") or text.startswith("👋 Berhasil") or text.startswith("✅ Berhasil") or text.startswith("📢 **[BROADCAST PROGRESS]**") or text.startswith("📢 **[BROADCAST GRUP PROGRESS]**") or text.startswith("⚠️ **fitur auto bl**"):
+    if text.startswith("ℹ️ **DETAILED") or text.startswith("🏓 Pong!") or text.startswith("👋 Berhasil") or text.startswith("✅ Berhasil") or text.startswith("📢 **[BROADCAST PROGRESS]**") or text.startswith("📢 **[BROADCAST GRUP PROGRESS]**"):
         return
 
     if not text.startswith("."):
@@ -355,22 +361,22 @@ async def handler(event):
             info_text = (
                 "ℹ️ **DETAILED USER INFORMATION**\n"
                 "──────────────────────────────\n"
-                f"👤 **Nama Lengkap:** `{full_name}`\n"
-                f"🆔 **User ID:** `{user_obj.id}`\n"
-                f"🏷️ **Username:** {username}\n"
-                f"🌐 **Data Center (DC):** `DC-{dc_id}`\n"
+                "👤 **Nama Lengkap:** `{full_name}`\n"
+                "🆔 **User ID:** `{user_obj.id}`\n"
+                "🏷️ **Username:** {username}\n"
+                "🌐 **Data Center (DC):** `DC-{dc_id}`\n"
                 "──────────────────────────────\n"
-                f"📊 **Jabatan di Grup Ini:**\n"
-                f"└─ `{group_status}`\n\n"
-                f"⏱️ **Status Keaktifan:**\n"
-                f"└─ `{status_text}`\n\n"
-                f"🔒 **Aspek Keamanan & Fitur:**\n"
-                f"├─ Premium: {is_premium}\n"
-                f"├─ Akun Bot: {is_bot}\n"
-                f"├─ Status Scam: {is_scam}\n"
-                f"└─ Status Fake: {is_fake}\n\n"
+                "📊 **Jabatan di Grup Ini:**\n"
+                "└─ `{group_status}`\n\n"
+                "⏱️ **Status Keaktifan:**\n"
+                "└─ `{status_text}`\n\n"
+                "🔒 **Aspek Keamanan & Fitur:**\n"
+                "├─ Premium: {is_premium}\n"
+                "├─ Akun Bot: {is_bot}\n"
+                "├─ Status Scam: {is_scam}\n"
+                "└─ Status Fake: {is_fake}\n\n"
                 f"📸 **Jumlah Foto Profil:** `{len(photos)} foto`\n"
-                f"📝 **Bio/About:**\n"
+                "📝 **Bio/About:**\n"
                 f"`{bio}`\n"
                 "──────────────────────────────\n"
                 f"🔗 **Link DM Instan:** [Klik Disini](tg://user?id={user_obj.id})"
