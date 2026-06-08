@@ -34,6 +34,24 @@ AUTO_CHAT_INTERVAL = 600
 LINK_REGEX = r'(https?://[^\s]+|t\.me/[^\s]+|www\.[^\s]+|\b[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b)'
 MENTION_REGEX = r'@\w+'
 
+# ────────────────────────────────────────────────
+# Tracking pesan welcome terakhir (message_id)
+# ────────────────────────────────────────────────
+last_welcome_msg_id = None
+
+WELCOME_TEMPLATES = [
+    "🎉 Heyy, **{name}** baru aja masuk ke grup!\nSalam kenal ya, semoga betah dan aktif di sini 😄\n\n📌 Jangan lupa baca rules grup ya kak~",
+    "👋 Selamat datang **{name}**!\nSenang banget ada anggota baru nih 🥳\nYuk langsung gabung ngobrol, jangan malu-malu~",
+    "🌟 Welcome to the fam, **{name}**! 🎊\nKita baik-baik kok di sini, santai aja ya~\nKalau ada yang mau ditanyain, langsung gas aja 😊",
+    "🚀 Ada yang baru nih!\n**{name}** resmi bergabung ke grup kita 🎉\nHope you enjoy it here, feel free to say hi!",
+    "💫 Yeay, **{name}** udah join!\nWelcome welcome~ Jangan jadi silent reader aja ya, yuk rame-ramein grup 😁",
+    "🎈 Halo **{name}**, selamat datang!\nMudah-mudahan betah ya di sini 🙏\nGrup ini friendly kok, jadi jangan sungkan~",
+    "🌈 **{name}** baru aja landing di grup kita! ✈️\nWelcome on board~ Yuk kenalan dulu sama anak-anak sini 👋",
+    "🎁 Member baru alert! 🚨\n**{name}** resmi jadi bagian dari kita sekarang 😎\nSelamat datang, semoga kerasan!",
+    "✨ Heyy **{name}**! Akhirnya kesasar juga ke sini wkwk 😂\nWelcome! Gas langsung aktif ya, jangan lurker doang hehe~",
+    "🏠 **{name}** udah masuk, anggap aja rumah sendiri ya! 😄\nWelcome to the squad~ Jangan pelit komentar loh!",
+]
+
 LIST_OBROLAN = [
     "p", "P", "gimana gess? aman semua kan?", "sepi amat dah wkwk pada ke mana nih orang-orang",
     "gess absen dulu dong yang lagi online jam segini 👋", "hadir gess, baru mantau lagi nih",
@@ -183,6 +201,54 @@ def bio_mengandung_bahaya(bio: str) -> bool:
     return False
 
 
+# ────────────────────────────────────────────────
+# AUTO WELCOME — hapus welcome lama, kirim baru
+# ────────────────────────────────────────────────
+@tele.on(events.ChatAction())
+async def auto_welcome_handler(event):
+    global last_welcome_msg_id
+
+    try:
+        # Hanya proses event "user joined"
+        if not event.user_joined and not event.user_added:
+            return
+
+        chat = await event.get_chat()
+        chat_username = f"@{chat.username}" if hasattr(chat, 'username') and chat.username else ""
+
+        # Pastikan hanya jalan di grup target
+        if TARGET_GROUP_ID.lower() != chat_username.lower():
+            return
+
+        user = await event.get_user()
+        if not user:
+            return
+
+        first_name = user.first_name or "Kawan"
+        full_name = f"{user.first_name or ''} {user.last_name or ''}".strip() or "Kawan Baru"
+
+        # Pilih template welcome secara acak
+        template = random.choice(WELCOME_TEMPLATES)
+        welcome_text = template.format(name=full_name)
+
+        # Hapus pesan welcome sebelumnya kalau ada
+        if last_welcome_msg_id is not None:
+            try:
+                await tele.delete_messages(chat.id, last_welcome_msg_id)
+                logger.info(f"🗑️ [WELCOME] Pesan welcome lama (id={last_welcome_msg_id}) berhasil dihapus.")
+            except Exception as del_err:
+                logger.warning(f"⚠️ [WELCOME] Gagal hapus welcome lama: {del_err}")
+            last_welcome_msg_id = None
+
+        # Kirim pesan welcome baru
+        sent = await tele.send_message(chat.id, welcome_text, parse_mode='md')
+        last_welcome_msg_id = sent.id
+        logger.info(f"🎉 [WELCOME] Welcome dikirim untuk {full_name} (msg_id={sent.id})")
+
+    except Exception as e:
+        logger.error(f"❌ [WELCOME-ERROR] Gagal kirim auto welcome: {e}")
+
+
 @tele.on(events.NewMessage(incoming=True))
 async def auto_blacklist_gcast_handler(event):
     if not event.is_group:
@@ -248,71 +314,7 @@ async def admin_command_handler(event):
 
     text = event.raw_text.strip()
 
-    if text.startswith(".invite"):
-        parts = text.split(" ", 1)
-        if len(parts) < 2:
-            await event.respond("❌ Format: `.invite @user1 @user2 123456789`")
-            return
-
-        targets_raw = parts[1].strip().split()
-        total = len(targets_raw)
-        hasil = []
-
-        sent = await event.respond(f"⏳ Memproses invite {total} user...")
-
-        for i, target_raw in enumerate(targets_raw, start=1):
-            try:
-                if target_raw.lstrip("-").isdigit():
-                    target = int(target_raw)
-                else:
-                    target = target_raw
-
-                user_entity = await tele.get_entity(target)
-                await tele(InviteToChannelRequest(
-                    channel=TARGET_GROUP_ID,
-                    users=[user_entity]
-                ))
-                hasil.append(f"✅ `{target_raw}`")
-                logger.info(f"✅ [INVITE] Admin {event.sender_id} invite {target_raw} ke grup")
-
-            except FloodWaitError as flood:
-                wait_secs = flood.seconds + 2
-                hasil.append(f"⏳ `{target_raw}` — cooldown {wait_secs} detik, menunggu...")
-                logger.warning(f"⚠️ [INVITE] FloodWait {wait_secs}s untuk {target_raw}")
-                try:
-                    await sent.edit(f"⏳ Progress {i}/{total}\n" + "\n".join(hasil))
-                except Exception:
-                    pass
-                await asyncio.sleep(wait_secs)
-                try:
-                    user_entity = await tele.get_entity(target)
-                    await tele(InviteToChannelRequest(
-                        channel=TARGET_GROUP_ID,
-                        users=[user_entity]
-                    ))
-                    hasil[-1] = f"✅ `{target_raw}` (retry berhasil)"
-                except Exception as retry_err:
-                    hasil[-1] = f"❌ `{target_raw}` — {retry_err}"
-
-            except Exception as e:
-                hasil.append(f"❌ `{target_raw}` — {e}")
-                logger.error(f"❌ [INVITE ERROR] {target_raw}: {e}")
-
-            await asyncio.sleep(2)
-
-            if i % 5 == 0 or i == total:
-                try:
-                    await sent.edit(f"⏳ Progress {i}/{total}\n" + "\n".join(hasil))
-                except Exception:
-                    pass
-
-        sukses = sum(1 for h in hasil if h.startswith("✅"))
-        gagal = total - sukses
-        await sent.edit(
-            f"📋 **Hasil Invite Selesai**\n"
-            f"✅ Berhasil: `{sukses}` | ❌ Gagal: `{gagal}` | Total: `{total}`\n\n"
-            + "\n".join(hasil)
-        )
+    # Tidak ada lagi .invite — diganti auto welcome di atas
 
 
 @tele.on(events.NewMessage(outgoing=True))
