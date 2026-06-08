@@ -8,8 +8,7 @@ from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.tl.functions.users import GetFullUserRequest
 from telethon.tl.functions.messages import SetTypingRequest
-from telethon.tl.functions.channels import InviteToChannelRequest
-from telethon.tl.types import SendMessageTypingAction, User
+from telethon.tl.types import SendMessageTypingAction, User, MessageActionChatAddUser, MessageActionChatJoinedByLink, MessageActionChatJoinedByRequest
 from telethon.errors import FloodWaitError
 from pyrogram import Client as PyroClient
 from pyrogram.raw.functions.phone import LeaveGroupCall
@@ -34,10 +33,8 @@ AUTO_CHAT_INTERVAL = 600
 LINK_REGEX = r'(https?://[^\s]+|t\.me/[^\s]+|www\.[^\s]+|\b[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b)'
 MENTION_REGEX = r'@\w+'
 
-# ────────────────────────────────────────────────
-# Tracking pesan welcome terakhir (message_id)
-# ────────────────────────────────────────────────
 last_welcome_msg_id = None
+_welcome_lock = asyncio.Lock()
 
 WELCOME_TEMPLATES = [
     "🎉 Heyy, **{name}** baru aja masuk ke grup!\nSalam kenal ya, semoga betah dan aktif di sini 😄\n\n📌 Jangan lupa baca rules grup ya kak~",
@@ -90,6 +87,120 @@ pyro = None
 call = None
 bot_clients = []
 
+# ─────────────────────────────────────────────────────────
+# HELPER: cek apakah chat ini adalah TARGET_GROUP_ID
+# Support username (@xxx), chat_id integer, dan string id
+# ─────────────────────────────────────────────────────────
+async def is_target_group(chat) -> bool:
+    try:
+        target = TARGET_GROUP_ID.lstrip("@").lower()
+
+        # Cek via username
+        if hasattr(chat, 'username') and chat.username:
+            if chat.username.lower() == target:
+                return True
+
+        # Cek via resolving username ke ID
+        try:
+            entity = await tele.get_entity(TARGET_GROUP_ID)
+            if hasattr(entity, 'id') and chat.id == entity.id:
+                return True
+        except Exception:
+            pass
+
+    except Exception as e:
+        logger.warning(f"⚠️ [TARGET-CHECK] Error: {e}")
+
+    return False
+
+
+# ─────────────────────────────────────────────────────────
+# CORE WELCOME FUNCTION — dipanggil dari 2 handler
+# ─────────────────────────────────────────────────────────
+async def kirim_welcome(chat, user):
+    global last_welcome_msg_id
+
+    async with _welcome_lock:
+        try:
+            if not user:
+                return
+
+            full_name = f"{user.first_name or ''} {user.last_name or ''}".strip() or "Kawan Baru"
+            template = random.choice(WELCOME_TEMPLATES)
+            welcome_text = template.format(name=full_name)
+
+            # Hapus welcome lama
+            if last_welcome_msg_id is not None:
+                try:
+                    await tele.delete_messages(chat.id, last_welcome_msg_id)
+                    logger.info(f"🗑️ [WELCOME] Welcome lama (id={last_welcome_msg_id}) dihapus.")
+                except Exception as del_err:
+                    logger.warning(f"⚠️ [WELCOME] Gagal hapus welcome lama: {del_err}")
+                last_welcome_msg_id = None
+
+            # Kirim welcome baru
+            sent = await tele.send_message(chat.id, welcome_text, parse_mode='md')
+            last_welcome_msg_id = sent.id
+            logger.info(f"🎉 [WELCOME] Dikirim untuk {full_name} (msg_id={sent.id})")
+
+        except Exception as e:
+            logger.error(f"❌ [WELCOME-ERROR] {e}")
+
+
+# ─────────────────────────────────────────────────────────
+# HANDLER 1: via ChatAction (join/added)
+# ─────────────────────────────────────────────────────────
+@tele.on(events.ChatAction())
+async def welcome_via_chataction(event):
+    try:
+        if not event.user_joined and not event.user_added:
+            return
+
+        chat = await event.get_chat()
+        logger.info(f"📥 [CHATACTION] user_joined={event.user_joined} | chat_id={chat.id} | username={getattr(chat, 'username', None)}")
+
+        if not await is_target_group(chat):
+            return
+
+        user = await event.get_user()
+        await kirim_welcome(chat, user)
+
+    except Exception as e:
+        logger.error(f"❌ [CHATACTION-ERROR] {e}")
+
+
+# ─────────────────────────────────────────────────────────
+# HANDLER 2: via NewMessage action (backup jika ChatAction miss)
+# ─────────────────────────────────────────────────────────
+@tele.on(events.NewMessage(incoming=True))
+async def welcome_via_newmessage(event):
+    try:
+        if not event.is_group:
+            return
+
+        action = event.message.action
+        if not isinstance(action, (MessageActionChatAddUser, MessageActionChatJoinedByLink, MessageActionChatJoinedByRequest)):
+            return
+
+        chat = await event.get_chat()
+        logger.info(f"📥 [NEWMSG-ACTION] action={type(action).__name__} | chat_id={chat.id} | username={getattr(chat, 'username', None)}")
+
+        if not await is_target_group(chat):
+            return
+
+        user = await event.get_sender()
+        if not user and isinstance(action, MessageActionChatAddUser) and action.users:
+            try:
+                user = await tele.get_entity(action.users[0])
+            except Exception:
+                pass
+
+        await kirim_welcome(chat, user)
+
+    except Exception as e:
+        logger.error(f"❌ [NEWMSG-ACTION-ERROR] {e}")
+
+
 async def resolve_peer_pyro(chat_id):
     try:
         await pyro.get_chat(chat_id)
@@ -118,6 +229,7 @@ async def resolve_peer_pyro(chat_id):
         logger.error(f"❌ [PEER-RESOLVER] Gagal total menyelesaikan peer ID: {e}")
 
     return False
+
 
 async def multi_bot_chat_loop():
     if not bot_clients:
@@ -201,54 +313,6 @@ def bio_mengandung_bahaya(bio: str) -> bool:
     return False
 
 
-# ────────────────────────────────────────────────
-# AUTO WELCOME — hapus welcome lama, kirim baru
-# ────────────────────────────────────────────────
-@tele.on(events.ChatAction())
-async def auto_welcome_handler(event):
-    global last_welcome_msg_id
-
-    try:
-        # Hanya proses event "user joined"
-        if not event.user_joined and not event.user_added:
-            return
-
-        chat = await event.get_chat()
-        chat_username = f"@{chat.username}" if hasattr(chat, 'username') and chat.username else ""
-
-        # Pastikan hanya jalan di grup target
-        if TARGET_GROUP_ID.lower() != chat_username.lower():
-            return
-
-        user = await event.get_user()
-        if not user:
-            return
-
-        first_name = user.first_name or "Kawan"
-        full_name = f"{user.first_name or ''} {user.last_name or ''}".strip() or "Kawan Baru"
-
-        # Pilih template welcome secara acak
-        template = random.choice(WELCOME_TEMPLATES)
-        welcome_text = template.format(name=full_name)
-
-        # Hapus pesan welcome sebelumnya kalau ada
-        if last_welcome_msg_id is not None:
-            try:
-                await tele.delete_messages(chat.id, last_welcome_msg_id)
-                logger.info(f"🗑️ [WELCOME] Pesan welcome lama (id={last_welcome_msg_id}) berhasil dihapus.")
-            except Exception as del_err:
-                logger.warning(f"⚠️ [WELCOME] Gagal hapus welcome lama: {del_err}")
-            last_welcome_msg_id = None
-
-        # Kirim pesan welcome baru
-        sent = await tele.send_message(chat.id, welcome_text, parse_mode='md')
-        last_welcome_msg_id = sent.id
-        logger.info(f"🎉 [WELCOME] Welcome dikirim untuk {full_name} (msg_id={sent.id})")
-
-    except Exception as e:
-        logger.error(f"❌ [WELCOME-ERROR] Gagal kirim auto welcome: {e}")
-
-
 @tele.on(events.NewMessage(incoming=True))
 async def auto_blacklist_gcast_handler(event):
     if not event.is_group:
@@ -256,24 +320,24 @@ async def auto_blacklist_gcast_handler(event):
 
     try:
         chat = await event.get_chat()
-        chat_username = f"@{chat.username}" if hasattr(chat, 'username') and chat.username else ""
-
-        if TARGET_GROUP_ID.lower() != chat_username.lower():
+        if not await is_target_group(chat):
             return
 
         if event.out:
             return
 
+        # Skip service messages (join/leave action)
+        if event.message.action is not None:
+            return
+
         text = event.raw_text.strip() if event.raw_text else ""
         text_lower = text.lower()
 
-        # 1. SCAN LINK DI ISI PESAN
         if re.search(LINK_REGEX, text, re.IGNORECASE):
             await event.delete()
             logger.info(f"🗑️ [LINK-LOCKDOWN] Pesan berisi link dari {event.sender_id} DIHAPUS!")
             return
 
-        # 2. SCAN GCAST / FORWARD / KEYWORDS
         is_forwarded = event.message.fwd_from is not None
         gcast_keywords = ["gcast", "gikes", "broadcast", "ready p", "bantu up", "pm panel", "open bo"]
         has_keyword = any(kw in text_lower for kw in gcast_keywords)
@@ -283,7 +347,6 @@ async def auto_blacklist_gcast_handler(event):
             logger.info(f"🗑️ [GCAST-BL] Pesan gikes dari {event.sender_id} DIHAPUS!")
             return
 
-        # 3. SCAN PROFIL PENGGUNA (USERNAME & BIO)
         sender = await event.get_sender()
         if not sender or not hasattr(sender, 'id') or not isinstance(sender, User):
             return
@@ -308,13 +371,9 @@ async def auto_blacklist_gcast_handler(event):
 async def admin_command_handler(event):
     if event.sender_id not in ADMIN_IDS:
         return
-
     if not event.raw_text:
         return
-
-    text = event.raw_text.strip()
-
-    # Tidak ada lagi .invite — diganti auto welcome di atas
+    # Tempat tambah command admin lain nanti
 
 
 @tele.on(events.NewMessage(outgoing=True))
@@ -332,28 +391,22 @@ async def handler(event):
 
     logger.info(f"🔥 Perintah Masuk: {text!r} | Chat ID: {event.chat_id}")
 
-    # PING
     if text == ".ping":
         start = time.monotonic()
         sent = await event.respond("🏓 Mengukur...")
         ms = round((time.monotonic() - start) * 1000)
         await sent.edit(f"🏓 Pong! `{ms}ms`")
 
-    # JOIN VC
     elif text == ".jvc":
         chat_id = event.chat_id
         try:
             await resolve_peer_pyro(chat_id)
-            await call.play(
-                chat_id,
-                MediaStream("anullsrc", ffmpeg_parameters="-f lavfi"),
-            )
+            await call.play(chat_id, MediaStream("anullsrc", ffmpeg_parameters="-f lavfi"))
             await event.respond("✅ Berhasil join ke obrolan suara!")
         except Exception as e:
             logger.error(f"join error: {e}")
             await event.respond(f"❌ Gagal join: `{e}`")
 
-    # LEAVE VC
     elif text == ".leave":
         chat_id = event.chat_id
         try:
@@ -387,7 +440,6 @@ async def handler(event):
                     try: getattr(call, cache_attr).remove(chat_id)
                     except: pass
 
-    # INFO
     elif text.startswith(".info"):
         parts = text.split(" ", 1)
         user_obj = None
@@ -484,7 +536,6 @@ async def handler(event):
         except Exception as e:
             await sent.edit(f"❌ **Gagal membongkar info detil:** `{e}`")
 
-    # BROADCAST GRUP
     elif text.startswith(".bc"):
         parts = text.split(" ", 1)
         bc_msg = parts[1].strip() if len(parts) > 1 else ""
