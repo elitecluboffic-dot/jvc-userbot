@@ -193,6 +193,42 @@ async def welcome_via_newmessage(event):
 
 
 # ─────────────────────────────────────────────────────────
+# HELPER: Kirim warning DM via bot clone (dengan tombol inline)
+# ─────────────────────────────────────────────────────────
+async def kirim_warning_via_bot(user_id: int, nama: str, count: int):
+    """
+    Bot clone kirim warning langsung ke DM si spammer.
+    Syarat: si spammer pernah /start ke bot clone tersebut,
+    atau bot clone sudah pernah berinteraksi dengannya.
+    Kalau gagal semua bot, fallback kirim tanpa tombol via tele.
+    """
+    warning_text = (
+        f"Hai **{nama}** 👋. Jangan spam atau lu bakal diblokir!!\n\n"
+        f"⚠️ Peringatan {count} dari {DM_MAX_WARNING} !!"
+    )
+    buttons = [
+        [Button.inline("✅ Oke, Gak Akan Spam Lagi", data=f"agree_{user_id}"),
+         Button.inline("❌ Gak Setuju", data=f"disagree_{user_id}")],
+        [Button.inline("🚫 Blokir User Ini Sekarang", data=f"block_{user_id}")],
+        [Button.inline(f"⚠️ Peringatan {count} dari {DM_MAX_WARNING}", data="warn_info")],
+    ]
+
+    # Coba semua bot clone satu per satu
+    for bot in bot_clients:
+        try:
+            await bot.send_message(user_id, warning_text, buttons=buttons)
+            logger.info(f"✅ [DM-WARNING] Bot clone berhasil kirim warning ke {nama} ({user_id})")
+            return True
+        except Exception as e:
+            logger.warning(f"⚠️ [DM-WARNING] Bot clone gagal kirim ke {user_id}: {e}")
+            continue
+
+    # Fallback: kirim via user account tanpa tombol
+    logger.warning(f"⚠️ [DM-WARNING] Semua bot clone gagal. Fallback ke tele tanpa tombol.")
+    return False
+
+
+# ─────────────────────────────────────────────────────────
 # HANDLER 3: Auto DM Spam Warning
 # ─────────────────────────────────────────────────────────
 @tele.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
@@ -227,18 +263,21 @@ async def auto_dm_spam_handler(event):
         logger.info(f"⚠️ [DM-SPAM] Spam dari {nama} ({user_id}) | Warning ke-{count}/{DM_MAX_WARNING}")
 
         if count < DM_MAX_WARNING:
-            warning_text = (
-                f"Hai **{nama}** 👋. Jangan spam atau lu bakal diblokir!!\n\n"
-                f"⚠️ Peringatan {count} dari {DM_MAX_WARNING} !!"
-            )
-            buttons = [
-                [Button.inline("✅ Setuju", data=f"agree_{user_id}"),
-                 Button.inline("❌ Gak Setuju", data=f"disagree_{user_id}")],
-                [Button.inline("🚫 Blokir & Lapor", data=f"block_{user_id}")],
-                [Button.inline(f"⚠️ Peringatan {count} dari {DM_MAX_WARNING} !!", data="warn_info")],
-            ]
-            await event.reply(warning_text, buttons=buttons)
-
+            # Coba kirim via bot clone dulu (ada tombol inline)
+            if bot_clients:
+                success = await kirim_warning_via_bot(user_id, nama, count)
+                if not success:
+                    # Fallback tanpa tombol via akun userbot
+                    await event.reply(
+                        f"Hai **{nama}** 👋. Jangan spam atau lu bakal diblokir!!\n\n"
+                        f"⚠️ Peringatan {count} dari {DM_MAX_WARNING} !!"
+                    )
+            else:
+                # Tidak ada bot clone sama sekali, kirim tanpa tombol
+                await event.reply(
+                    f"Hai **{nama}** 👋. Jangan spam atau lu bakal diblokir!!\n\n"
+                    f"⚠️ Peringatan {count} dari {DM_MAX_WARNING} !!"
+                )
         else:
             # Max warning — auto blokir
             await tele(BlockRequest(id=sender.id))
@@ -254,7 +293,47 @@ async def auto_dm_spam_handler(event):
 
 
 # ─────────────────────────────────────────────────────────
-# HANDLER 4: Callback tombol DM warning
+# HELPER: Daftarkan CallbackQuery handler ke semua bot clone
+# ─────────────────────────────────────────────────────────
+def register_bot_clone_handlers(bot: TelegramClient):
+    """Daftarkan handler callback tombol ke satu bot clone."""
+
+    @bot.on(events.CallbackQuery())
+    async def bot_clone_callback_handler(event):
+        try:
+            data = event.data.decode()
+
+            if data.startswith("agree_"):
+                await event.answer("✅ Oke, makasih udah setuju! Jangan spam lagi ya.", alert=False)
+                await event.edit(
+                    event.message.text + "\n\n✅ _User menyetujui peringatan._",
+                    parse_mode='md'
+                )
+
+            elif data.startswith("disagree_"):
+                await event.answer("❌ Noted. Tapi tetap jangan spam ya!", alert=True)
+
+            elif data.startswith("block_"):
+                target_id = int(data.split("_")[1])
+                try:
+                    await tele(BlockRequest(id=target_id))
+                    dm_warning_count.pop(target_id, None)
+                    await event.answer("🚫 User berhasil diblokir oleh userbot!", alert=True)
+                    await event.edit("🚫 User telah **diblokir manual** via tombol bot clone.")
+                    logger.info(f"🚫 [DM-SPAM] User {target_id} diblokir manual via tombol bot clone.")
+                except Exception as block_err:
+                    await event.answer(f"❌ Gagal blokir: {block_err}", alert=True)
+
+            elif data == "warn_info":
+                await event.answer("⚠️ Ini adalah hitungan peringatan spam.", alert=True)
+
+        except Exception as e:
+            logger.error(f"❌ [BOT-CLONE-CALLBACK-ERROR] {e}")
+
+
+# ─────────────────────────────────────────────────────────
+# HANDLER 4: Callback tombol DM warning (fallback di tele userbot)
+# Ini handle kalau ada callback yang nyasar ke userbot
 # ─────────────────────────────────────────────────────────
 @tele.on(events.CallbackQuery())
 async def dm_button_handler(event):
@@ -687,8 +766,12 @@ async def main():
         try:
             b_client = TelegramClient(f'bot_session_{idx}', API_ID, API_HASH)
             await b_client.start(bot_token=token)
+
+            # ✅ Daftarkan handler callback tombol ke setiap bot clone
+            register_bot_clone_handlers(b_client)
+
             bot_clients.append(b_client)
-            logger.info(f"✅ Bot Clone Ke-{idx} Sukses Terkoneksi!")
+            logger.info(f"✅ Bot Clone Ke-{idx} Sukses Terkoneksi + Handler Terdaftar!")
         except Exception as e:
             logger.error(f"❌ Gagal menyalakan Bot Clone ke-{idx}: {e}")
 
