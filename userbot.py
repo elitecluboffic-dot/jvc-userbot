@@ -8,6 +8,7 @@ from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.tl.functions.users import GetFullUserRequest
 from telethon.tl.functions.messages import SetTypingRequest
+from telethon.tl.functions.channels import InviteToChannelRequest
 from telethon.tl.types import SendMessageTypingAction, User
 from telethon.errors import FloodWaitError
 from pyrogram import Client as PyroClient
@@ -303,6 +304,83 @@ async def handler(event):
                 if hasattr(call, cache_attr):
                     try: getattr(call, cache_attr).remove(chat_id)
                     except: pass
+
+    # INVITE USER
+    elif text.startswith(".invite"):
+        parts = text.split(" ", 1)
+        if len(parts) < 2 or not parts[1].strip():
+            await event.respond(
+                "❗ **Cara pakai:**\n"
+                "`.invite @username` — invite by username\n"
+                "`.invite 123456789` — invite by user ID\n"
+                "Atau reply pesan user lalu ketik `.invite`"
+            )
+            return
+
+        target_raw = parts[1].strip()
+        chat_id = event.chat_id
+        sent = await event.respond(f"🔄 Mengundang `{target_raw}` ke grup...")
+
+        try:
+            # Resolve target user
+            try:
+                if target_raw.lstrip('-').isdigit():
+                    target_user = await tele.get_entity(int(target_raw))
+                else:
+                    target_user = await tele.get_entity(target_raw)
+            except Exception:
+                await sent.edit(f"❌ Gagal menemukan user `{target_raw}`. Pastikan username/ID benar.")
+                return
+
+            await tele(InviteToChannelRequest(
+                channel=chat_id,
+                users=[target_user]
+            ))
+
+            full_name = f"{target_user.first_name or ''} {getattr(target_user, 'last_name', '') or ''}".strip()
+            await sent.edit(
+                f"✅ Berhasil mengundang [{full_name}](tg://user?id={target_user.id}) ke grup!",
+                link_preview=False
+            )
+            logger.info(f"✅ [INVITE] Berhasil invite {full_name} ({target_user.id}) ke {chat_id}")
+
+        except Exception as e:
+            err_msg = str(e).lower()
+            if "privacy" in err_msg or "not mutual contact" in err_msg:
+                await sent.edit(f"❌ Gagal invite: User mengaktifkan privasi, tidak bisa di-add ke grup.")
+            elif "already" in err_msg:
+                await sent.edit(f"❌ User sudah ada di dalam grup.")
+            elif "banned" in err_msg or "kick" in err_msg:
+                await sent.edit(f"❌ User pernah di-kick/banned dari grup ini.")
+            elif "admin" in err_msg:
+                await sent.edit(f"❌ Kamu butuh hak admin untuk mengundang member.")
+            else:
+                await sent.edit(f"❌ Gagal invite: `{e}`")
+            logger.error(f"❌ [INVITE ERROR] {e}")
+
+    # INVITE VIA REPLY
+    elif text == ".invite" and event.is_reply:
+        chat_id = event.chat_id
+        sent = await event.respond("🔄 Mengundang user dari pesan yang di-reply...")
+        try:
+            reply_msg = await event.get_reply_message()
+            target_user = await tele.get_entity(reply_msg.sender_id)
+
+            await tele(InviteToChannelRequest(
+                channel=chat_id,
+                users=[target_user]
+            ))
+
+            full_name = f"{target_user.first_name or ''} {getattr(target_user, 'last_name', '') or ''}".strip()
+            await sent.edit(
+                f"✅ Berhasil mengundang [{full_name}](tg://user?id={target_user.id}) ke grup!",
+                link_preview=False
+            )
+            logger.info(f"✅ [INVITE-REPLY] Berhasil invite {full_name} ({target_user.id}) ke {chat_id}")
+
+        except Exception as e:
+            await sent.edit(f"❌ Gagal invite via reply: `{e}`")
+            logger.error(f"❌ [INVITE-REPLY ERROR] {e}")
 
     # INFO
     elif text.startswith(".info"):
