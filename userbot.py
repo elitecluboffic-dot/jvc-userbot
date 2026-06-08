@@ -7,7 +7,7 @@ import re
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.tl.functions.users import GetFullUserRequest
-from telethon.tl.functions.messages import SetTypingRequest, DeleteMessagesRequest
+from telethon.tl.functions.messages import SetTypingRequest
 from telethon.tl.types import SendMessageTypingAction, User
 from telethon.errors import FloodWaitError
 from pyrogram import Client as PyroClient
@@ -199,7 +199,7 @@ async def auto_blacklist_gcast_handler(event):
 
         # 1. SCAN LINK DI ISI PESAN
         if re.search(LINK_REGEX, text, re.IGNORECASE):
-            await tele(DeleteMessagesRequest(event.chat_id, [event.message.id], revoke=True))
+            await event.delete()
             logger.info(f"🗑️ [LINK-LOCKDOWN] Pesan berisi link dari {event.sender_id} DIHAPUS!")
             return
 
@@ -209,7 +209,7 @@ async def auto_blacklist_gcast_handler(event):
         has_keyword = any(kw in text_lower for kw in gcast_keywords)
 
         if is_forwarded or has_keyword:
-            await tele(DeleteMessagesRequest(event.chat_id, [event.message.id], revoke=True))
+            await event.delete()
             logger.info(f"🗑️ [GCAST-BL] Pesan gikes dari {event.sender_id} DIHAPUS!")
             return
 
@@ -220,13 +220,13 @@ async def auto_blacklist_gcast_handler(event):
 
         user_uname = sender.username.lower() if sender.username else ""
         if any(x in user_uname for x in ["http", "t.me", ".com", ".net", ".id", ".org", "bot"]):
-            await tele(DeleteMessagesRequest(event.chat_id, [event.message.id], revoke=True))
+            await event.delete()
             logger.info(f"🗑️ [USERNAME-BL] Pesan dari {sender.first_name} dihapus karena username mengandung link/bot!")
             return
 
         bio = await get_bio_safe(sender.id)
         if bio_mengandung_bahaya(bio):
-            await tele(DeleteMessagesRequest(event.chat_id, [event.message.id], revoke=True))
+            await event.delete()
             logger.info(f"🗑️ [BIO-LOCKDOWN] Pesan dari {sender.first_name} ({sender.id}) dihapus karena bio mengandung link/mention: {bio[:100]}")
             return
 
