@@ -8,7 +8,9 @@ from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.tl.functions.users import GetFullUserRequest
 from telethon.tl.functions.messages import SetTypingRequest
+from telethon.tl.functions.contacts import BlockRequest
 from telethon.tl.types import SendMessageTypingAction, User, MessageActionChatAddUser, MessageActionChatJoinedByLink, MessageActionChatJoinedByRequest
+from telethon.tl.custom import Button
 from telethon.errors import FloodWaitError
 from pyrogram import Client as PyroClient
 from pyrogram.raw.functions.phone import LeaveGroupCall
@@ -35,6 +37,16 @@ MENTION_REGEX = r'@\w+'
 
 last_welcome_msg_id = None
 _welcome_lock = asyncio.Lock()
+
+# ─────────────────────────────────────────────────────────
+# DM SPAM WARNING SYSTEM
+# ─────────────────────────────────────────────────────────
+dm_warning_count = {}   # {user_id: int}
+DM_MAX_WARNING = 5
+DM_GCAST_KEYWORDS = [
+    "gcast", "gikes", "broadcast", "ready p", "bantu up",
+    "pm panel", "open bo", "join sini", "join dong", "masuk sini"
+]
 
 WELCOME_TEMPLATES = [
     "🎉 Heyy, **{name}** baru aja masuk ke grup!\nSalam kenal ya, semoga betah dan aktif di sini 😄\n\n📌 Jangan lupa baca rules grup ya kak~",
@@ -87,49 +99,40 @@ pyro = None
 call = None
 bot_clients = []
 
+
 # ─────────────────────────────────────────────────────────
 # HELPER: cek apakah chat ini adalah TARGET_GROUP_ID
-# Support username (@xxx), chat_id integer, dan string id
 # ─────────────────────────────────────────────────────────
 async def is_target_group(chat) -> bool:
     try:
         target = TARGET_GROUP_ID.lstrip("@").lower()
-
-        # Cek via username
         if hasattr(chat, 'username') and chat.username:
             if chat.username.lower() == target:
                 return True
-
-        # Cek via resolving username ke ID
         try:
             entity = await tele.get_entity(TARGET_GROUP_ID)
             if hasattr(entity, 'id') and chat.id == entity.id:
                 return True
         except Exception:
             pass
-
     except Exception as e:
         logger.warning(f"⚠️ [TARGET-CHECK] Error: {e}")
-
     return False
 
 
 # ─────────────────────────────────────────────────────────
-# CORE WELCOME FUNCTION — dipanggil dari 2 handler
+# CORE WELCOME FUNCTION
 # ─────────────────────────────────────────────────────────
 async def kirim_welcome(chat, user):
     global last_welcome_msg_id
-
     async with _welcome_lock:
         try:
             if not user:
                 return
-
             full_name = f"{user.first_name or ''} {user.last_name or ''}".strip() or "Kawan Baru"
             template = random.choice(WELCOME_TEMPLATES)
             welcome_text = template.format(name=full_name)
 
-            # Hapus welcome lama
             if last_welcome_msg_id is not None:
                 try:
                     await tele.delete_messages(chat.id, last_welcome_msg_id)
@@ -138,67 +141,145 @@ async def kirim_welcome(chat, user):
                     logger.warning(f"⚠️ [WELCOME] Gagal hapus welcome lama: {del_err}")
                 last_welcome_msg_id = None
 
-            # Kirim welcome baru
             sent = await tele.send_message(chat.id, welcome_text, parse_mode='md')
             last_welcome_msg_id = sent.id
             logger.info(f"🎉 [WELCOME] Dikirim untuk {full_name} (msg_id={sent.id})")
-
         except Exception as e:
             logger.error(f"❌ [WELCOME-ERROR] {e}")
 
 
 # ─────────────────────────────────────────────────────────
-# HANDLER 1: via ChatAction (join/added)
+# HANDLER 1: Welcome via ChatAction
 # ─────────────────────────────────────────────────────────
 @tele.on(events.ChatAction())
 async def welcome_via_chataction(event):
     try:
         if not event.user_joined and not event.user_added:
             return
-
         chat = await event.get_chat()
         logger.info(f"📥 [CHATACTION] user_joined={event.user_joined} | chat_id={chat.id} | username={getattr(chat, 'username', None)}")
-
         if not await is_target_group(chat):
             return
-
         user = await event.get_user()
         await kirim_welcome(chat, user)
-
     except Exception as e:
         logger.error(f"❌ [CHATACTION-ERROR] {e}")
 
 
 # ─────────────────────────────────────────────────────────
-# HANDLER 2: via NewMessage action (backup jika ChatAction miss)
+# HANDLER 2: Welcome via NewMessage action (backup)
 # ─────────────────────────────────────────────────────────
 @tele.on(events.NewMessage(incoming=True))
 async def welcome_via_newmessage(event):
     try:
         if not event.is_group:
             return
-
         action = event.message.action
         if not isinstance(action, (MessageActionChatAddUser, MessageActionChatJoinedByLink, MessageActionChatJoinedByRequest)):
             return
-
         chat = await event.get_chat()
-        logger.info(f"📥 [NEWMSG-ACTION] action={type(action).__name__} | chat_id={chat.id} | username={getattr(chat, 'username', None)}")
-
+        logger.info(f"📥 [NEWMSG-ACTION] action={type(action).__name__} | chat_id={chat.id}")
         if not await is_target_group(chat):
             return
-
         user = await event.get_sender()
         if not user and isinstance(action, MessageActionChatAddUser) and action.users:
             try:
                 user = await tele.get_entity(action.users[0])
             except Exception:
                 pass
-
         await kirim_welcome(chat, user)
-
     except Exception as e:
         logger.error(f"❌ [NEWMSG-ACTION-ERROR] {e}")
+
+
+# ─────────────────────────────────────────────────────────
+# HANDLER 3: Auto DM Spam Warning
+# ─────────────────────────────────────────────────────────
+@tele.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
+async def auto_dm_spam_handler(event):
+    try:
+        sender = await event.get_sender()
+        if not sender or not isinstance(sender, User):
+            return
+
+        # Skip admin
+        if sender.id in ADMIN_IDS:
+            return
+
+        text = event.raw_text.strip() if event.raw_text else ""
+        is_spam = False
+
+        if re.search(LINK_REGEX, text, re.IGNORECASE):
+            is_spam = True
+        if event.message.fwd_from is not None:
+            is_spam = True
+        if any(kw in text.lower() for kw in DM_GCAST_KEYWORDS):
+            is_spam = True
+
+        if not is_spam:
+            return
+
+        user_id = sender.id
+        dm_warning_count[user_id] = dm_warning_count.get(user_id, 0) + 1
+        count = dm_warning_count[user_id]
+        nama = sender.first_name or "Kamu"
+
+        logger.info(f"⚠️ [DM-SPAM] Spam dari {nama} ({user_id}) | Warning ke-{count}/{DM_MAX_WARNING}")
+
+        if count < DM_MAX_WARNING:
+            warning_text = (
+                f"Hai **{nama}** 👋. Jangan spam atau lu bakal diblokir!!\n\n"
+                f"⚠️ Peringatan {count} dari {DM_MAX_WARNING} !!"
+            )
+            buttons = [
+                [Button.inline("✅ Setuju", data=f"agree_{user_id}"),
+                 Button.inline("❌ Gak Setuju", data=f"disagree_{user_id}")],
+                [Button.inline("🚫 Blokir & Lapor", data=f"block_{user_id}")],
+                [Button.inline(f"⚠️ Peringatan {count} dari {DM_MAX_WARNING} !!", data="warn_info")],
+            ]
+            await event.reply(warning_text, buttons=buttons)
+
+        else:
+            # Max warning — auto blokir
+            await tele(BlockRequest(id=sender.id))
+            await event.reply(
+                f"🚫 **{nama}** telah diblokir otomatis karena terlalu banyak spam!\n"
+                f"({DM_MAX_WARNING}/{DM_MAX_WARNING} peringatan tercapai)"
+            )
+            dm_warning_count.pop(user_id, None)
+            logger.info(f"🚫 [DM-SPAM] {nama} ({user_id}) DIBLOKIR otomatis!")
+
+    except Exception as e:
+        logger.error(f"❌ [DM-SPAM-ERROR] {e}")
+
+
+# ─────────────────────────────────────────────────────────
+# HANDLER 4: Callback tombol DM warning
+# ─────────────────────────────────────────────────────────
+@tele.on(events.CallbackQuery())
+async def dm_button_handler(event):
+    try:
+        data = event.data.decode()
+
+        if data.startswith("agree_"):
+            await event.answer("✅ Oke, makasih udah setuju!", alert=False)
+
+        elif data.startswith("disagree_"):
+            await event.answer("❌ Noted. Tapi tetap jangan spam ya!", alert=True)
+
+        elif data.startswith("block_"):
+            user_id = int(data.split("_")[1])
+            await tele(BlockRequest(id=user_id))
+            dm_warning_count.pop(user_id, None)
+            await event.answer("🚫 User berhasil diblokir!", alert=True)
+            await event.edit("🚫 User telah diblokir manual.")
+            logger.info(f"🚫 [DM-SPAM] User {user_id} diblokir manual via tombol.")
+
+        elif data == "warn_info":
+            await event.answer("⚠️ Ini adalah hitungan peringatan spam kamu.", alert=True)
+
+    except Exception as e:
+        logger.error(f"❌ [CALLBACK-ERROR] {e}")
 
 
 async def resolve_peer_pyro(chat_id):
@@ -317,16 +398,12 @@ def bio_mengandung_bahaya(bio: str) -> bool:
 async def auto_blacklist_gcast_handler(event):
     if not event.is_group:
         return
-
     try:
         chat = await event.get_chat()
         if not await is_target_group(chat):
             return
-
         if event.out:
             return
-
-        # Skip service messages (join/leave action)
         if event.message.action is not None:
             return
 
