@@ -32,8 +32,8 @@ BOT_TOKENS = [t.strip() for t in RAW_TOKENS.split(",") if t.strip()]
 TARGET_GROUP_ID = "@CARI_CRUSH_ONLINE"  # ID/Username grup tujuan lu
 AUTO_CHAT_INTERVAL = 600          # Jeda kirim chat (600 detik = 10 menit sekali)
 
-# Regex untuk mencium keberadaan link di bio profil pengguna
-LINK_REGEX = r'(https?://[^\s]+|t\.me/[^\s]+|www\.[^\s]+)'
+# Regex Super Ketat untuk mendeteksi segala bentuk link/domain web
+LINK_REGEX = r'(https?://[^\s]+|t\.me/[^\s]+|www\.[^\s]+|\b[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b)'
 
 LIST_OBROLAN = [
     "p", "P", "gimana gess? aman semua kan?", "sepi amat dah wkwk pada ke mana nih orang-orang",
@@ -169,7 +169,7 @@ async def multi_bot_chat_loop():
         await asyncio.sleep(total_jeda)
 
 
-# ==================== 🔥 HANDLER AUTO BLACKLIST GCAST & LINK BIO 🔥 ====================
+# ==================== 🔥 HANDLER ANTIVIRUS GRUP: TOTAL LINK LOCKDOWN & GCAST 🔥 ====================
 @tele.on(events.NewMessage(incoming=True))
 async def auto_blacklist_gcast_handler(event):
     if not event.is_group:
@@ -183,12 +183,21 @@ async def auto_blacklist_gcast_handler(event):
             return # Skip kalau bukan di grup @CARI_CRUSH_ONLINE
             
         if event.out:
+            return # Jangan hapus ketikan lu sendiri selaku owner
+
+        text = event.raw_text.strip().lower() if event.raw_text else ""
+
+        # -------------------------------------------------------------
+        # 1. SCAN TOTAL: ADA LINK DI DALAM ISI PESAN?
+        # -------------------------------------------------------------
+        if re.search(LINK_REGEX, text, re.IGNORECASE):
+            await tele(DeleteMessagesRequest(id=[event.message.id], revoke=True))
+            logger.info(f"🗑️ [TOTAL-LOCKDOWN] Pesan mengandung link dari Sender ID: {event.sender_id} BERHASIL DIHAPUS SENYAP!")
             return
 
         # -------------------------------------------------------------
-        # 1. AKSI DETEKSI GCAST / GIKES JAHANAM
+        # 2. SCAN TOTAL: DETEKSI FORMAT GCAST / FORWARD / KEYWORDS JAHANAM
         # -------------------------------------------------------------
-        text = event.raw_text.strip().lower() if event.raw_text else ""
         is_forwarded = event.message.fwd_from is not None
         gcast_keywords = ["gcast", "gikes", "broadcast", "ready p", "bantu up", "pm panel", "open bo"]
         has_keyword = any(kw in text for kw in gcast_keywords)
@@ -196,21 +205,29 @@ async def auto_blacklist_gcast_handler(event):
         if is_forwarded or has_keyword:
             await tele(DeleteMessagesRequest(id=[event.message.id], revoke=True))
             logger.info(f"🗑️ [AUTO-BL-GCAST] Berhasil menghapus pesan gikes dari Sender ID: {event.sender_id}")
-            return # Selesai, ga perlu lanjut cek bio lagi kalau chatnya udah tewas
+            return
 
         # -------------------------------------------------------------
-        # 2. AKSI DETEKSI LINK DI BIO PROFIL PENGGUNA (SILENT DELETE)
+        # 3. SCAN TOTAL: CHECK PROFIL PENGGUNA (USERNAME & BIO)
         # -------------------------------------------------------------
         sender = await event.get_sender()
         if sender and hasattr(sender, 'id') and isinstance(sender, User):
-            # Ambil data profil lengkap sang pengirim untuk dibongkar bionya
+            
+            # Cek jika username akunnya sengaja dimodifikasi pake unsur domain link
+            user_uname = sender.username.lower() if sender.username else ""
+            if any(x in user_uname for x in ["http", "t.me", ".com", ".net", ".id", ".org", "bot"]):
+                await tele(DeleteMessagesRequest(id=[event.message.id], revoke=True))
+                logger.info(f"🗑️ [TOTAL-LOCKDOWN] Pesan dari {sender.first_name} dihapus karena username mengandung nama link/bot!")
+                return
+
+            # Ambil data profil lengkap untuk dibongkar bionya
             full_user = await tele(GetFullUserRequest(id=sender.id))
             bio = full_user.full_user.about
             
-            # Jika user punya bio dan bionya terbukti memuat link aktif
+            # Jika bionya terbukti memuat link aktif
             if bio and re.search(LINK_REGEX, bio, re.IGNORECASE):
                 await tele(DeleteMessagesRequest(id=[event.message.id], revoke=True))
-                logger.info(f"🗑️ [AUTO-DEL-BIO] Pesan dari {sender.first_name} ({sender.id}) dihapus senyap karena ada link di bio: {bio}")
+                logger.info(f"🗑️ [TOTAL-LOCKDOWN] Pesan dari {sender.first_name} ({sender.id}) dihapus senyap karena ada link di bio: {bio}")
 
     except Exception as e:
         logger.error(f"❌ [AUTO-MOD-ERROR] Gagal eksekusi pengawasan grup: {e}")
