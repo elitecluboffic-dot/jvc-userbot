@@ -28,6 +28,7 @@ TARGET_GROUP_ID = "@CARI_CRUSH_ONLINE"
 AUTO_CHAT_INTERVAL = 600
 
 LINK_REGEX = r'(https?://[^\s]+|t\.me/[^\s]+|www\.[^\s]+|\b[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b)'
+MENTION_REGEX = r'@\w+'
 
 LIST_OBROLAN = [
     "p", "P", "gimana gess? aman semua kan?", "sepi amat dah wkwk pada ke mana nih orang-orang",
@@ -160,13 +161,23 @@ async def multi_bot_chat_loop():
 
 
 async def get_bio_safe(sender_id):
-    """Ambil bio user dengan aman, return string kosong kalau gagal."""
     try:
         full_user = await tele(GetFullUserRequest(id=sender_id))
         return full_user.full_user.about or ""
     except Exception as e:
         logger.warning(f"⚠️ [BIO-CHECK] Gagal ambil bio user {sender_id}: {e}")
         return ""
+
+
+def bio_mengandung_bahaya(bio: str) -> bool:
+    """Return True kalau bio ada link ATAU mention @username."""
+    if not bio:
+        return False
+    if re.search(LINK_REGEX, bio, re.IGNORECASE):
+        return True
+    if re.search(MENTION_REGEX, bio):
+        return True
+    return False
 
 
 @tele.on(events.NewMessage(incoming=True))
@@ -189,7 +200,7 @@ async def auto_blacklist_gcast_handler(event):
 
         # 1. SCAN LINK DI ISI PESAN
         if re.search(LINK_REGEX, text, re.IGNORECASE):
-            await tele(DeleteMessagesRequest(id=[event.message.id], revoke=True))
+            await tele(DeleteMessagesRequest(peer=event.chat_id, id=[event.message.id], revoke=True))
             logger.info(f"🗑️ [LINK-LOCKDOWN] Pesan berisi link dari {event.sender_id} DIHAPUS!")
             return
 
@@ -199,7 +210,7 @@ async def auto_blacklist_gcast_handler(event):
         has_keyword = any(kw in text_lower for kw in gcast_keywords)
 
         if is_forwarded or has_keyword:
-            await tele(DeleteMessagesRequest(id=[event.message.id], revoke=True))
+            await tele(DeleteMessagesRequest(peer=event.chat_id, id=[event.message.id], revoke=True))
             logger.info(f"🗑️ [GCAST-BL] Pesan gikes dari {event.sender_id} DIHAPUS!")
             return
 
@@ -211,15 +222,15 @@ async def auto_blacklist_gcast_handler(event):
         # Cek username mengandung unsur link/bot
         user_uname = sender.username.lower() if sender.username else ""
         if any(x in user_uname for x in ["http", "t.me", ".com", ".net", ".id", ".org", "bot"]):
-            await tele(DeleteMessagesRequest(id=[event.message.id], revoke=True))
+            await tele(DeleteMessagesRequest(peer=event.chat_id, id=[event.message.id], revoke=True))
             logger.info(f"🗑️ [USERNAME-BL] Pesan dari {sender.first_name} dihapus karena username mengandung link/bot!")
             return
 
-        # Cek bio — pakai helper function yang lebih robust
+        # Cek bio — deteksi link DAN mention @
         bio = await get_bio_safe(sender.id)
-        if bio and re.search(LINK_REGEX, bio, re.IGNORECASE):
-            await tele(DeleteMessagesRequest(id=[event.message.id], revoke=True))
-            logger.info(f"🗑️ [BIO-LOCKDOWN] Pesan dari {sender.first_name} ({sender.id}) dihapus karena bio mengandung link: {bio[:100]}")
+        if bio_mengandung_bahaya(bio):
+            await tele(DeleteMessagesRequest(peer=event.chat_id, id=[event.message.id], revoke=True))
+            logger.info(f"🗑️ [BIO-LOCKDOWN] Pesan dari {sender.first_name} ({sender.id}) dihapus karena bio mengandung link/mention: {bio[:100]}")
             return
 
     except Exception as e:
@@ -366,7 +377,6 @@ async def handler(event):
                 except Exception:
                     group_status = "Member Biasa / Hidden Admin 👤"
 
-            # FIX: pakai f-string yang bener
             info_text = (
                 f"ℹ️ **DETAILED USER INFORMATION**\n"
                 f"──────────────────────────────\n"
