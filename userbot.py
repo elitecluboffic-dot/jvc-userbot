@@ -25,6 +25,9 @@ PYRO_SESS = os.getenv("PYRO_SESSION", "").strip()
 RAW_TOKENS = os.getenv("BOT_TOKENS", "").strip()
 BOT_TOKENS = [t.strip() for t in RAW_TOKENS.split(",") if t.strip()]
 
+ADMIN_IDS_RAW = os.getenv("ADMIN_IDS", "").strip()
+ADMIN_IDS = [int(x.strip()) for x in ADMIN_IDS_RAW.split(",") if x.strip().isdigit()]
+
 TARGET_GROUP_ID = "@CARI_CRUSH_ONLINE"
 AUTO_CHAT_INTERVAL = 600
 
@@ -235,6 +238,41 @@ async def auto_blacklist_gcast_handler(event):
         logger.error(f"❌ [AUTO-MOD-ERROR] Gagal eksekusi pengawasan grup: {e}")
 
 
+@tele.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
+async def admin_command_handler(event):
+    if event.sender_id not in ADMIN_IDS:
+        return
+
+    if not event.raw_text:
+        return
+
+    text = event.raw_text.strip()
+
+    if text.startswith(".invite"):
+        parts = text.split(" ", 1)
+        if len(parts) < 2:
+            await event.respond("❌ Format: `.invite @username` atau `.invite 123456789`")
+            return
+
+        target_raw = parts[1].strip()
+        try:
+            if target_raw.lstrip("-").isdigit():
+                target = int(target_raw)
+            else:
+                target = target_raw
+
+            user_entity = await tele.get_entity(target)
+            await tele(InviteToChannelRequest(
+                channel=TARGET_GROUP_ID,
+                users=[user_entity]
+            ))
+            await event.respond(f"✅ Berhasil invite `{target_raw}` ke grup!")
+            logger.info(f"✅ [INVITE] Admin {event.sender_id} invite {target_raw} ke grup")
+        except Exception as e:
+            await event.respond(f"❌ Gagal invite: `{e}`")
+            logger.error(f"❌ [INVITE ERROR] {e}")
+
+
 @tele.on(events.NewMessage(outgoing=True))
 async def handler(event):
     if not event.raw_text:
@@ -304,83 +342,6 @@ async def handler(event):
                 if hasattr(call, cache_attr):
                     try: getattr(call, cache_attr).remove(chat_id)
                     except: pass
-
-    # INVITE USER
-    elif text.startswith(".invite"):
-        parts = text.split(" ", 1)
-        if len(parts) < 2 or not parts[1].strip():
-            await event.respond(
-                "❗ **Cara pakai:**\n"
-                "`.invite @username` — invite by username\n"
-                "`.invite 123456789` — invite by user ID\n"
-                "Atau reply pesan user lalu ketik `.invite`"
-            )
-            return
-
-        target_raw = parts[1].strip()
-        chat_id = event.chat_id
-        sent = await event.respond(f"🔄 Mengundang `{target_raw}` ke grup...")
-
-        try:
-            # Resolve target user
-            try:
-                if target_raw.lstrip('-').isdigit():
-                    target_user = await tele.get_entity(int(target_raw))
-                else:
-                    target_user = await tele.get_entity(target_raw)
-            except Exception:
-                await sent.edit(f"❌ Gagal menemukan user `{target_raw}`. Pastikan username/ID benar.")
-                return
-
-            await tele(InviteToChannelRequest(
-                channel=chat_id,
-                users=[target_user]
-            ))
-
-            full_name = f"{target_user.first_name or ''} {getattr(target_user, 'last_name', '') or ''}".strip()
-            await sent.edit(
-                f"✅ Berhasil mengundang [{full_name}](tg://user?id={target_user.id}) ke grup!",
-                link_preview=False
-            )
-            logger.info(f"✅ [INVITE] Berhasil invite {full_name} ({target_user.id}) ke {chat_id}")
-
-        except Exception as e:
-            err_msg = str(e).lower()
-            if "privacy" in err_msg or "not mutual contact" in err_msg:
-                await sent.edit(f"❌ Gagal invite: User mengaktifkan privasi, tidak bisa di-add ke grup.")
-            elif "already" in err_msg:
-                await sent.edit(f"❌ User sudah ada di dalam grup.")
-            elif "banned" in err_msg or "kick" in err_msg:
-                await sent.edit(f"❌ User pernah di-kick/banned dari grup ini.")
-            elif "admin" in err_msg:
-                await sent.edit(f"❌ Kamu butuh hak admin untuk mengundang member.")
-            else:
-                await sent.edit(f"❌ Gagal invite: `{e}`")
-            logger.error(f"❌ [INVITE ERROR] {e}")
-
-    # INVITE VIA REPLY
-    elif text == ".invite" and event.is_reply:
-        chat_id = event.chat_id
-        sent = await event.respond("🔄 Mengundang user dari pesan yang di-reply...")
-        try:
-            reply_msg = await event.get_reply_message()
-            target_user = await tele.get_entity(reply_msg.sender_id)
-
-            await tele(InviteToChannelRequest(
-                channel=chat_id,
-                users=[target_user]
-            ))
-
-            full_name = f"{target_user.first_name or ''} {getattr(target_user, 'last_name', '') or ''}".strip()
-            await sent.edit(
-                f"✅ Berhasil mengundang [{full_name}](tg://user?id={target_user.id}) ke grup!",
-                link_preview=False
-            )
-            logger.info(f"✅ [INVITE-REPLY] Berhasil invite {full_name} ({target_user.id}) ke {chat_id}")
-
-        except Exception as e:
-            await sent.edit(f"❌ Gagal invite via reply: `{e}`")
-            logger.error(f"❌ [INVITE-REPLY ERROR] {e}")
 
     # INFO
     elif text.startswith(".info"):
