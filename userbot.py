@@ -238,7 +238,7 @@ async def auto_blacklist_gcast_handler(event):
         logger.error(f"❌ [AUTO-MOD-ERROR] Gagal eksekusi pengawasan grup: {e}")
 
 
-@tele.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
+@tele.on(events.NewMessage(incoming=True))
 async def admin_command_handler(event):
     if event.sender_id not in ADMIN_IDS:
         return
@@ -251,26 +251,68 @@ async def admin_command_handler(event):
     if text.startswith(".invite"):
         parts = text.split(" ", 1)
         if len(parts) < 2:
-            await event.respond("❌ Format: `.invite @username` atau `.invite 123456789`")
+            await event.respond("❌ Format: `.invite @user1 @user2 123456789`")
             return
 
-        target_raw = parts[1].strip()
-        try:
-            if target_raw.lstrip("-").isdigit():
-                target = int(target_raw)
-            else:
-                target = target_raw
+        targets_raw = parts[1].strip().split()
+        total = len(targets_raw)
+        hasil = []
 
-            user_entity = await tele.get_entity(target)
-            await tele(InviteToChannelRequest(
-                channel=TARGET_GROUP_ID,
-                users=[user_entity]
-            ))
-            await event.respond(f"✅ Berhasil invite `{target_raw}` ke grup!")
-            logger.info(f"✅ [INVITE] Admin {event.sender_id} invite {target_raw} ke grup")
-        except Exception as e:
-            await event.respond(f"❌ Gagal invite: `{e}`")
-            logger.error(f"❌ [INVITE ERROR] {e}")
+        sent = await event.respond(f"⏳ Memproses invite {total} user...")
+
+        for i, target_raw in enumerate(targets_raw, start=1):
+            try:
+                if target_raw.lstrip("-").isdigit():
+                    target = int(target_raw)
+                else:
+                    target = target_raw
+
+                user_entity = await tele.get_entity(target)
+                await tele(InviteToChannelRequest(
+                    channel=TARGET_GROUP_ID,
+                    users=[user_entity]
+                ))
+                hasil.append(f"✅ `{target_raw}`")
+                logger.info(f"✅ [INVITE] Admin {event.sender_id} invite {target_raw} ke grup")
+
+            except FloodWaitError as flood:
+                wait_secs = flood.seconds + 2
+                hasil.append(f"⏳ `{target_raw}` — cooldown {wait_secs} detik, menunggu...")
+                logger.warning(f"⚠️ [INVITE] FloodWait {wait_secs}s untuk {target_raw}")
+                try:
+                    await sent.edit(f"⏳ Progress {i}/{total}\n" + "\n".join(hasil))
+                except Exception:
+                    pass
+                await asyncio.sleep(wait_secs)
+                try:
+                    user_entity = await tele.get_entity(target)
+                    await tele(InviteToChannelRequest(
+                        channel=TARGET_GROUP_ID,
+                        users=[user_entity]
+                    ))
+                    hasil[-1] = f"✅ `{target_raw}` (retry berhasil)"
+                except Exception as retry_err:
+                    hasil[-1] = f"❌ `{target_raw}` — {retry_err}"
+
+            except Exception as e:
+                hasil.append(f"❌ `{target_raw}` — {e}")
+                logger.error(f"❌ [INVITE ERROR] {target_raw}: {e}")
+
+            await asyncio.sleep(2)
+
+            if i % 5 == 0 or i == total:
+                try:
+                    await sent.edit(f"⏳ Progress {i}/{total}\n" + "\n".join(hasil))
+                except Exception:
+                    pass
+
+        sukses = sum(1 for h in hasil if h.startswith("✅"))
+        gagal = total - sukses
+        await sent.edit(
+            f"📋 **Hasil Invite Selesai**\n"
+            f"✅ Berhasil: `{sukses}` | ❌ Gagal: `{gagal}` | Total: `{total}`\n\n"
+            + "\n".join(hasil)
+        )
 
 
 @tele.on(events.NewMessage(outgoing=True))
