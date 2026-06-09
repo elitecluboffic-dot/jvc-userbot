@@ -70,6 +70,7 @@ DEFAULT_DB = {
     "users": {},
     "queue_free": [],
     "queue_premium": [],
+    "queue_pending": [],   # ← BARU: antrian menunggu approval admin (khusus free)
     "stats": {
         "total_post": 0,
         "total_users": 0
@@ -131,7 +132,6 @@ def get_user(db: dict, user_id: int) -> dict:
             "is_premium": False,
             "premium_expiry": None,
             "daily_post_count": 0,
-            # ── UPDATED: simpan timestamp ISO post pertama hari ini ──
             "quota_reset_time": None,
             "total_posts": 0,
             "joined_at": datetime.now().isoformat(),
@@ -139,7 +139,6 @@ def get_user(db: dict, user_id: int) -> dict:
         }
         db["stats"]["total_users"] += 1
         save_db(db)
-    # ── Migrasi user lama yang belum punya quota_reset_time ──
     if "quota_reset_time" not in db["users"][uid]:
         db["users"][uid]["quota_reset_time"] = None
     return db["users"][uid]
@@ -166,55 +165,31 @@ def get_daily_limit(db: dict, user_id: int) -> int:
         return db["settings"]["premium_daily_limit"]
     return db["settings"]["free_daily_limit"]
 
-# ─────────────────────────────────────────────────────────
-# ── UPDATED: Reset kuota 24 jam sejak post pertama ──
-# ─────────────────────────────────────────────────────────
 def reset_daily_if_needed(db: dict, user_id: int):
-    """
-    Kuota di-reset 24 jam setelah post pertama dilakukan.
-    Bukan midnight reset — tapi rolling 24 jam.
-    """
     user = get_user(db, user_id)
     reset_time_str = user.get("quota_reset_time")
-
     if reset_time_str is None:
-        # Belum pernah post sama sekali, atau sudah di-reset
         return
-
     reset_time = datetime.fromisoformat(reset_time_str)
     now = datetime.now()
-
     if now >= reset_time:
-        # Sudah lewat 24 jam → reset kuota
-        update_user(db, user_id,
-            daily_post_count=0,
-            quota_reset_time=None
-        )
+        update_user(db, user_id, daily_post_count=0, quota_reset_time=None)
         logger.info(f"🔄 [QUOTA-RESET] Kuota user {user_id} di-reset (24 jam terpenuhi)")
 
 def get_quota_reset_remaining(db: dict, user_id: int) -> str:
-    """
-    Kembalikan string sisa waktu sampai kuota reset.
-    Contoh: '5 jam 30 menit' atau '45 menit' atau '23 detik'
-    """
     user = get_user(db, user_id)
     reset_time_str = user.get("quota_reset_time")
-
     if reset_time_str is None:
         return "Sekarang"
-
     reset_time = datetime.fromisoformat(reset_time_str)
     now = datetime.now()
     delta = reset_time - now
-
     if delta.total_seconds() <= 0:
         return "Sekarang"
-
     total_seconds = int(delta.total_seconds())
     hours = total_seconds // 3600
     minutes = (total_seconds % 3600) // 60
     seconds = total_seconds % 60
-
     if hours > 0:
         return f"{hours} jam {minutes} menit"
     elif minutes > 0:
@@ -235,25 +210,17 @@ def remaining_posts(db: dict, user_id: int) -> int:
     return max(0, limit - user["daily_post_count"])
 
 def record_post_usage(db: dict, user_id: int):
-    """
-    Catat 1 post dipakai. Kalau ini post pertama hari ini,
-    set quota_reset_time = sekarang + 24 jam.
-    """
     reset_daily_if_needed(db, user_id)
     user = get_user(db, user_id)
     new_count = user["daily_post_count"] + 1
-
     update_kwargs = {
         "daily_post_count": new_count,
         "total_posts": user["total_posts"] + 1
     }
-
-    # Set reset time hanya saat post pertama (count sebelumnya = 0)
     if user["daily_post_count"] == 0 or user.get("quota_reset_time") is None:
         reset_at = (datetime.now() + timedelta(hours=24)).isoformat()
         update_kwargs["quota_reset_time"] = reset_at
         logger.info(f"⏰ [QUOTA] User {user_id} mulai kuota baru, reset dijadwalkan 24 jam lagi")
-
     update_user(db, user_id, **update_kwargs)
 
 # ─────────────────────────────────────────────────────────
@@ -335,6 +302,7 @@ def build_admin_menu() -> list:
         [Button.text("📤 Force Post"), Button.text("💾 Backup DB")],
         [Button.text("⚙️ Pengaturan"), Button.text("📢 Broadcast")],
         [Button.text("🗑️ Hapus Postingan"), Button.text("🔄 Reset Kuota User")],
+        [Button.text("📋 Antrian Pending"), Button.text("🗑️ Tolak Semua Pending")],  # ← BARU
     ]
 
 async def pap_send_welcome(bot: TelegramClient, user_id: int, user_name: str, username: str, db: dict):
@@ -368,17 +336,18 @@ async def pap_send_help(bot: TelegramClient, user_id: int, db: dict):
         f"1. Tekan tombol **Kirim PAP**\n"
         f"2. Kirim foto atau video kamu\n"
         f"3. Wajib sertakan hashtag **#m** (cowok) atau **#f** (cewek)\n"
-        f"4. Konten akan otomatis terposting ke {PAP_CHANNEL}\n\n"
+        f"4. Konten akan **direview admin** terlebih dahulu (khusus Free)\n"
+        f"5. Setelah disetujui, konten otomatis terposting ke {PAP_CHANNEL}\n\n"
         f"──────────────────────────\n"
         f"**🆓 User Free:**\n"
         f"• {sisa_free}x post per 24 jam\n"
         f"• Ada watermark `{wm}`\n"
-        f"• Masuk antrian umum\n\n"
+        f"• **Perlu approval admin sebelum diposting**\n\n"
         f"**💎 User Premium:**\n"
         f"• {sisa_prem}x post per 24 jam\n"
         f"• Tanpa watermark\n"
         f"• Antrian prioritas (lebih cepat)\n"
-        f"• Post langsung tanpa antre\n\n"
+        f"• **Langsung posting tanpa approval**\n\n"
         f"──────────────────────────\n"
         f"**⏰ Sistem Kuota:**\n"
         f"• Kuota dihitung **24 jam** sejak post pertamamu\n"
@@ -398,14 +367,12 @@ async def pap_send_profile(bot: TelegramClient, user_id: int, db: dict):
     user = get_user(db, user_id)
     premium = is_premium(db, user_id)
     reset_daily_if_needed(db, user_id)
-    # Reload setelah mungkin di-reset
     user = get_user(db, user_id)
     badge = "💎 Premium" if premium else "🆓 Free"
     sisa = remaining_posts(db, user_id)
     limit = get_daily_limit(db, user_id)
     expiry_text = "Selamanya" if (premium and not user["premium_expiry"]) else (user["premium_expiry"][:10] if user["premium_expiry"] else "-")
 
-    # Tampilkan info reset kuota
     reset_time_str = user.get("quota_reset_time")
     if reset_time_str and sisa == 0:
         sisa_waktu = get_quota_reset_remaining(db, user_id)
@@ -415,6 +382,10 @@ async def pap_send_profile(bot: TelegramClient, user_id: int, db: dict):
         quota_info = f"🔄 Reset kuota dalam: `{sisa_waktu}`"
     else:
         quota_info = f"✅ Kuota belum dipakai hari ini"
+
+    # Cek apakah ada kiriman pending milik user ini
+    pending_count = sum(1 for item in db.get("queue_pending", []) if item["user_id"] == user_id)
+    pending_info = f"\n⏳ Menunggu approval: `{pending_count}` kiriman" if pending_count > 0 else ""
 
     text = (
         f"👤 **PROFIL KAMU**\n\n"
@@ -427,7 +398,8 @@ async def pap_send_profile(bot: TelegramClient, user_id: int, db: dict):
         f"📤 Total Post: `{user['total_posts']}x`\n"
         f"📅 Post Periode Ini: `{user['daily_post_count']}/{limit}`\n"
         f"✅ Sisa Kuota: `{sisa}x`\n"
-        f"{quota_info}\n"
+        f"{quota_info}"
+        f"{pending_info}\n"
         f"📆 Bergabung: `{user['joined_at'][:10]}`\n"
         f"──────────────────────────"
     )
@@ -440,6 +412,7 @@ async def pap_send_stats(bot: TelegramClient, user_id: int, db: dict):
     free_count = total_users - premium_count
     q_free = len(db["queue_free"])
     q_prem = len(db["queue_premium"])
+    q_pending = len(db.get("queue_pending", []))  # ← BARU
     text = (
         f"📊 **STATISTIK BOT PAP AUTOPOST**\n\n"
         f"👥 Total User: `{total_users}`\n"
@@ -447,7 +420,8 @@ async def pap_send_stats(bot: TelegramClient, user_id: int, db: dict):
         f"📤 Total Post: `{stats.get('total_post', 0)}`\n"
         f"📥 Antrian Sekarang:\n"
         f"├ 💎 Premium: `{q_prem}` post\n"
-        f"└ 🆓 Free: `{q_free}` post"
+        f"├ 🆓 Free: `{q_free}` post\n"
+        f"└ ⏳ Pending Approval: `{q_pending}` post"
     )
     await bot.send_message(user_id, text, buttons=build_main_menu(user_id, db), parse_mode='md')
 
@@ -459,6 +433,7 @@ async def pap_send_premium_info(bot: TelegramClient, user_id: int, db: dict):
         f"✅ Post lebih banyak ({db['settings']['premium_daily_limit']}x/24 jam)\n"
         f"✅ Antrian prioritas (posting duluan)\n"
         f"✅ Tanpa watermark di konten\n"
+        f"✅ **Langsung posting tanpa perlu approval admin**\n"
         f"✅ Support langsung dari admin\n\n"
         f"──────────────────────────\n"
         f"💰 **Harga & Durasi:**\n"
@@ -500,6 +475,61 @@ async def send_join_prompt(bot: TelegramClient, user_id: int):
         ]
     )
 
+# ─────────────────────────────────────────────────────────
+# KIRIM NOTIFIKASI APPROVAL KE SEMUA ADMIN
+# ─────────────────────────────────────────────────────────
+async def notify_admins_pending(bot: TelegramClient, item: dict, pending_index: int):
+    """
+    Kirim preview media + tombol Approve/Tolak ke semua admin.
+    pending_index adalah posisi item di queue_pending (untuk callback).
+    """
+    user_id = item["user_id"]
+    display_name = item["display_name"]
+    caption = item.get("caption", "")
+    message_id = item["message_id"]
+    chat_id = item["chat_id"]
+    timestamp = item.get("timestamp", "-")[:16].replace("T", " ")
+
+    # Tombol approve / tolak memakai pending_id unik (user_id + timestamp hash)
+    pending_id = item.get("pending_id", f"{user_id}_{message_id}")
+
+    info_text = (
+        f"📬 **KONTEN BARU MENUNGGU APPROVAL**\n\n"
+        f"👤 Dari: **{display_name}** (`{user_id}`)\n"
+        f"🕐 Waktu kirim: `{timestamp}`\n"
+        f"📝 Caption:\n`{caption[:200]}`\n\n"
+        f"Tekan tombol di bawah untuk menyetujui atau menolak."
+    )
+    approve_data = f"pap_approve_{pending_id}".encode()
+    reject_data = f"pap_reject_{pending_id}".encode()
+    buttons = [
+        [
+            Button.inline("✅ Approve (Posting)", data=approve_data),
+            Button.inline("❌ Tolak", data=reject_data),
+        ]
+    ]
+
+    for admin_id in ADMIN_IDS:
+        try:
+            # Coba kirim media asli ke admin sebagai preview
+            original_msg = await bot.get_messages(chat_id, ids=message_id)
+            if original_msg and original_msg.media:
+                await bot.send_file(
+                    admin_id,
+                    file=original_msg.media,
+                    caption=info_text,
+                    buttons=buttons,
+                    parse_mode='md'
+                )
+            else:
+                await bot.send_message(admin_id, info_text, buttons=buttons, parse_mode='md')
+        except Exception as e:
+            logger.warning(f"⚠️ [PENDING-NOTIFY] Gagal kirim notif ke admin {admin_id}: {e}")
+            try:
+                await bot.send_message(admin_id, info_text, buttons=buttons, parse_mode='md')
+            except Exception as e2:
+                logger.error(f"❌ [PENDING-NOTIFY] Total gagal ke admin {admin_id}: {e2}")
+
 async def process_pap_media(bot: TelegramClient, event, db: dict):
     user_id = event.sender_id
     sender = await event.get_sender()
@@ -540,13 +570,11 @@ async def process_pap_media(bot: TelegramClient, event, db: dict):
         )
         return
 
-    # ── UPDATED: cek kuota dengan reset 24 jam ──
     reset_daily_if_needed(db, user_id)
     if not can_post_today(db, user_id):
         limit = get_daily_limit(db, user_id)
         premium = is_premium(db, user_id)
         sisa_waktu = get_quota_reset_remaining(db, user_id)
-
         if premium:
             await event.reply(
                 f"⏰ **Kuota harianmu habis!**\n\n"
@@ -567,6 +595,10 @@ async def process_pap_media(bot: TelegramClient, event, db: dict):
         return
 
     premium = is_premium(db, user_id)
+
+    # ── Buat pending_id unik untuk identifikasi item ──
+    pending_id = f"{user_id}_{event.message.id}"
+
     queue_item = {
         "user_id": user_id,
         "display_name": display_name,
@@ -574,28 +606,128 @@ async def process_pap_media(bot: TelegramClient, event, db: dict):
         "caption": caption,
         "message_id": event.message.id,
         "chat_id": event.chat_id,
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now().isoformat(),
+        "pending_id": pending_id
     }
 
     if premium:
+        # ── PREMIUM: langsung masuk antrian posting ──
         db["queue_premium"].append(queue_item)
+        save_db(db)
         pos_text = f"posisi #{len(db['queue_premium'])} (antrian premium)"
+        await event.reply(
+            f"✅ **Media berhasil masuk antrian!**\n\n"
+            f"📍 Kamu di {pos_text}\n"
+            f"⏳ Kontenmu akan segera diposting ke {PAP_CHANNEL}\n\n"
+            f"💎 Prioritas premium aktif! Langsung posting tanpa approval.",
+            parse_mode='md'
+        )
+        logger.info(f"📥 [PAP-QUEUE] User {display_name} ({user_id}) masuk antrian premium")
     else:
-        db["queue_free"].append(queue_item)
-        pos_text = f"posisi #{len(db['queue_free'])} (antrian umum)"
+        # ── FREE: masuk pending, tunggu approval admin ──
+        db["queue_pending"].append(queue_item)
+        save_db(db)
+        pending_pos = len(db["queue_pending"])
+        await event.reply(
+            f"⏳ **Media dikirim, menunggu review admin!**\n\n"
+            f"📋 Posisi pending: #{pending_pos}\n"
+            f"🔍 Admin akan mereview kontenmu sebelum diposting ke {PAP_CHANNEL}\n\n"
+            f"📢 Kamu akan mendapat notifikasi setelah di-approve atau ditolak.\n"
+            f"💎 Upgrade Premium untuk posting langsung tanpa approval!",
+            parse_mode='md'
+        )
+        logger.info(f"📥 [PAP-PENDING] User {display_name} ({user_id}) masuk antrian pending approval")
 
-    save_db(db)
-
-    await event.reply(
-        f"✅ **Media berhasil masuk antrian!**\n\n"
-        f"📍 Kamu di {pos_text}\n"
-        f"⏳ Kontenmu akan segera diposting ke {PAP_CHANNEL}\n\n"
-        f"{'💎 Prioritas premium aktif!' if premium else '💡 Upgrade Premium untuk antrian lebih cepat!'}",
-        parse_mode='md'
-    )
+        # Kirim notifikasi + preview ke semua admin
+        asyncio.create_task(notify_admins_pending(bot, queue_item, pending_pos - 1))
 
     pap_waiting_media.pop(user_id, None)
-    logger.info(f"📥 [PAP-QUEUE] User {display_name} ({user_id}) masuk antrian {'premium' if premium else 'free'}")
+
+# ─────────────────────────────────────────────────────────
+# APPROVE / REJECT PENDING (dipanggil dari callback)
+# ─────────────────────────────────────────────────────────
+async def approve_pending_item(bot: TelegramClient, pending_id: str) -> bool:
+    """
+    Cari item di queue_pending berdasarkan pending_id,
+    pindahkan ke queue_free, kembalikan True jika berhasil.
+    """
+    db = load_db()
+    pending_list = db.get("queue_pending", [])
+    found = None
+    found_idx = None
+    for i, item in enumerate(pending_list):
+        if item.get("pending_id") == pending_id:
+            found = item
+            found_idx = i
+            break
+
+    if found is None:
+        return False
+
+    # Hapus dari pending, masukkan ke queue_free
+    db["queue_pending"].pop(found_idx)
+    db["queue_free"].append(found)
+    save_db(db)
+
+    # Beritahu user
+    user_id = found["user_id"]
+    display_name = found["display_name"]
+    try:
+        await bot.send_message(
+            user_id,
+            f"✅ **Konten kamu disetujui oleh admin!**\n\n"
+            f"⏳ Kontenmu sudah masuk antrian dan akan segera diposting ke {PAP_CHANNEL}.\n\n"
+            f"💡 Upgrade ke Premium agar next time bisa posting tanpa approval!",
+            parse_mode='md',
+            buttons=build_main_menu(user_id, db)
+        )
+    except Exception as e:
+        logger.warning(f"⚠️ [APPROVE] Gagal notif user {user_id}: {e}")
+
+    logger.info(f"✅ [PAP-APPROVE] Admin approve konten dari {display_name} ({user_id}), masuk queue_free")
+    return True
+
+async def reject_pending_item(bot: TelegramClient, pending_id: str, reason: str = "") -> bool:
+    """
+    Cari item di queue_pending berdasarkan pending_id, hapus (tolak).
+    """
+    db = load_db()
+    pending_list = db.get("queue_pending", [])
+    found = None
+    found_idx = None
+    for i, item in enumerate(pending_list):
+        if item.get("pending_id") == pending_id:
+            found = item
+            found_idx = i
+            break
+
+    if found is None:
+        return False
+
+    db["queue_pending"].pop(found_idx)
+    save_db(db)
+
+    user_id = found["user_id"]
+    display_name = found["display_name"]
+    reason_text = f"\n📝 Alasan: _{reason}_" if reason else ""
+    try:
+        await bot.send_message(
+            user_id,
+            f"❌ **Konten kamu ditolak oleh admin.**\n\n"
+            f"Kontenmu tidak memenuhi syarat untuk diposting ke {PAP_CHANNEL}.{reason_text}\n\n"
+            f"⚠️ Pastikan konten sesuai aturan:\n"
+            f"• Bukan NSFW / konten dewasa\n"
+            f"• Tidak ada link / username di caption\n"
+            f"• Hashtag #m atau #f harus ada\n\n"
+            f"Kamu bisa kirim ulang konten yang sesuai aturan.",
+            parse_mode='md',
+            buttons=build_main_menu(user_id, db)
+        )
+    except Exception as e:
+        logger.warning(f"⚠️ [REJECT] Gagal notif user {user_id}: {e}")
+
+    logger.info(f"❌ [PAP-REJECT] Admin reject konten dari {display_name} ({user_id})")
+    return True
 
 async def post_from_queue(bot: TelegramClient, db: dict):
     if db["queue_premium"]:
@@ -632,17 +764,14 @@ async def post_from_queue(bot: TelegramClient, db: dict):
             parse_mode='md'
         )
 
-        # ── UPDATED: pakai record_post_usage untuk tracking 24 jam ──
         reset_daily_if_needed(db, user_id)
         record_post_usage(db, user_id)
 
-        # Reload user setelah update
         db = load_db()
         sisa = remaining_posts(db, user_id)
         db["stats"]["total_post"] = db["stats"].get("total_post", 0) + 1
         save_db(db)
 
-        # Info reset waktu untuk notifikasi
         user = get_user(db, user_id)
         reset_info = ""
         if sisa == 0:
@@ -761,7 +890,8 @@ def register_pap_handlers(bot: TelegramClient):
                     "👥 Daftar User", "✅ Approve Premium", "❌ Revoke Premium",
                     "🚫 Ban User", "✅ Unban User", "📤 Force Post",
                     "💾 Backup DB", "⚙️ Pengaturan", "📢 Broadcast",
-                    "📊 Statistik Bot", "🗑️ Hapus Postingan", "🔄 Reset Kuota User"
+                    "📊 Statistik Bot", "🗑️ Hapus Postingan", "🔄 Reset Kuota User",
+                    "📋 Antrian Pending", "🗑️ Tolak Semua Pending"
                 ]:
                     await process_pap_media(bot, event, db)
                     return
@@ -773,7 +903,6 @@ def register_pap_handlers(bot: TelegramClient):
                     await event.reply("🚫 Akun kamu di-ban.")
                     return
 
-                # Cek kuota dengan reset 24 jam
                 reset_daily_if_needed(db, user_id)
                 if not can_post_today(db, user_id):
                     limit = get_daily_limit(db, user_id)
@@ -792,7 +921,6 @@ def register_pap_handlers(bot: TelegramClient):
                 sisa = remaining_posts(db, user_id)
                 pap_waiting_media[user_id] = True
 
-                # Tampilkan info reset waktu
                 user_data = get_user(db, user_id)
                 reset_time_str = user_data.get("quota_reset_time")
                 reset_hint = ""
@@ -800,13 +928,19 @@ def register_pap_handlers(bot: TelegramClient):
                     sisa_waktu = get_quota_reset_remaining(db, user_id)
                     reset_hint = f"\n🔄 Reset kuota dalam: `{sisa_waktu}`"
 
+                approval_hint = (
+                    "💎 Langsung posting tanpa approval!" if premium
+                    else "⏳ Konten free perlu **approval admin** sebelum diposting."
+                )
+
                 await event.reply(
                     f"📤 **KIRIM PAP**\n\n"
                     f"Kirim foto atau video kamu sekarang.\n\n"
                     f"⚠️ **Wajib** sertakan hashtag **#m** atau **#f** di caption!\n"
                     f"{'💎 Kamu pakai antrian premium (prioritas)' if premium else '🆓 Kamu pakai antrian free'}\n"
                     f"📊 Sisa kuota: **{sisa}x**"
-                    f"{reset_hint}\n\n"
+                    f"{reset_hint}\n"
+                    f"{approval_hint}\n\n"
                     f"Ketik **❌ Batal** untuk membatalkan.",
                     parse_mode='md',
                     buttons=[[Button.text("❌ Batal")]]
@@ -899,11 +1033,13 @@ def register_pap_handlers(bot: TelegramClient):
             elif is_admin and text == "📤 Force Post":
                 db = load_db()
                 q_total = len(db["queue_free"]) + len(db["queue_premium"])
+                q_pending = len(db.get("queue_pending", []))
                 await event.reply(
                     f"📤 **FORCE POST**\n\n"
-                    f"Antrian saat ini: `{q_total}` post\n"
+                    f"Antrian siap posting: `{q_total}` post\n"
                     f"└ 💎 Premium: `{len(db['queue_premium'])}`\n"
                     f"└ 🆓 Free: `{len(db['queue_free'])}`\n\n"
+                    f"⏳ Pending approval: `{q_pending}` post\n\n"
                     f"Gunakan `/forcepost` untuk memproses antrian sekarang.",
                     parse_mode='md', buttons=build_admin_menu()
                 )
@@ -921,7 +1057,6 @@ def register_pap_handlers(bot: TelegramClient):
                     parse_mode='md', buttons=build_admin_menu()
                 )
 
-            # ── BARU: Reset Kuota User ──
             elif is_admin and text == "🔄 Reset Kuota User":
                 await event.reply(
                     f"🔄 **RESET KUOTA USER**\n\n"
@@ -933,6 +1068,64 @@ def register_pap_handlers(bot: TelegramClient):
                     f"⚠️ Ini akan mengosongkan hitungan post dan menghapus timer reset kuota.",
                     parse_mode='md', buttons=build_admin_menu()
                 )
+
+            # ── BARU: Lihat Antrian Pending ──
+            elif is_admin and text == "📋 Antrian Pending":
+                db = load_db()
+                pending = db.get("queue_pending", [])
+                if not pending:
+                    await event.reply(
+                        "📭 **Tidak ada konten yang menunggu approval.**",
+                        parse_mode='md', buttons=build_admin_menu()
+                    )
+                    return
+                lines = [f"📋 **ANTRIAN PENDING** (Total: {len(pending)})\n"]
+                for i, item in enumerate(pending[:15], start=1):
+                    ts = item.get("timestamp", "-")[:16].replace("T", " ")
+                    name = item.get("display_name", "Unknown")
+                    uid = item["user_id"]
+                    caption_preview = item.get("caption", "")[:50]
+                    pid = item.get("pending_id", "-")
+                    lines.append(
+                        f"{i}. **{name}** (`{uid}`)\n"
+                        f"   📝 `{caption_preview}`\n"
+                        f"   🕐 `{ts}`\n"
+                        f"   ✅ `/approvepap {pid}`  ❌ `/rejectpap {pid}`\n"
+                    )
+                if len(pending) > 15:
+                    lines.append(f"\n... dan {len(pending)-15} lainnya")
+                lines.append("\nGunakan command di atas untuk approve/tolak satu per satu.")
+                await event.reply("\n".join(lines), parse_mode='md', buttons=build_admin_menu())
+
+            # ── BARU: Tolak Semua Pending ──
+            elif is_admin and text == "🗑️ Tolak Semua Pending":
+                db = load_db()
+                pending = db.get("queue_pending", [])
+                if not pending:
+                    await event.reply("📭 Tidak ada pending yang perlu ditolak.", buttons=build_admin_menu())
+                    return
+                count = len(pending)
+                # Beritahu semua user yang pending bahwa kontennya ditolak
+                for item in pending:
+                    uid = item["user_id"]
+                    try:
+                        await bot.send_message(
+                            uid,
+                            f"❌ **Konten kamu ditolak oleh admin.**\n\n"
+                            f"Semua konten pending telah dibersihkan. Kamu bisa kirim ulang.",
+                            parse_mode='md',
+                            buttons=build_main_menu(uid, db)
+                        )
+                    except Exception:
+                        pass
+                db["queue_pending"] = []
+                save_db(db)
+                await event.reply(
+                    f"🗑️ **Semua pending berhasil ditolak!**\n\n"
+                    f"Total dihapus: `{count}` konten",
+                    parse_mode='md', buttons=build_admin_menu()
+                )
+                logger.info(f"🗑️ [PAP-ADMIN] Admin {user_id} tolak semua {count} pending")
 
             # ═══ ADMIN SLASH COMMANDS ═══
             elif is_admin and text.startswith("/approve "):
@@ -958,7 +1151,7 @@ def register_pap_handlers(bot: TelegramClient):
                                 f"🎉 **Selamat! Akun kamu telah di-upgrade ke PREMIUM!**\n\n"
                                 f"💎 Masa aktif: **{days} hari**\n"
                                 f"📅 Expired: `{expiry[:10]}`\n\n"
-                                f"Nikmati fitur premium kamu!",
+                                f"Nikmati fitur premium kamu! Posting langsung tanpa approval.",
                                 parse_mode='md', buttons=build_main_menu(target_id, db)
                             )
                         except Exception:
@@ -1002,8 +1195,18 @@ def register_pap_handlers(bot: TelegramClient):
                         db = load_db()
                         get_user(db, target_id)
                         update_user(db, target_id, is_banned=True)
+                        # Hapus juga semua pending milik user yang di-ban
+                        db = load_db()
+                        before = len(db.get("queue_pending", []))
+                        db["queue_pending"] = [
+                            item for item in db.get("queue_pending", [])
+                            if item["user_id"] != target_id
+                        ]
+                        removed = before - len(db["queue_pending"])
+                        save_db(db)
+                        extra = f"\n🗑️ `{removed}` pending konten juga dihapus." if removed > 0 else ""
                         await event.reply(
-                            f"🚫 **User berhasil di-ban!**\n🆔 User ID: `{target_id}`",
+                            f"🚫 **User berhasil di-ban!**\n🆔 User ID: `{target_id}`{extra}",
                             parse_mode='md', buttons=build_admin_menu()
                         )
                     except Exception as e:
@@ -1105,29 +1308,20 @@ def register_pap_handlers(bot: TelegramClient):
                         await event.reply("❌ Message ID harus berupa angka.\nContoh: `/delpost 42`")
                     except Exception as e:
                         await event.reply(
-                            f"❌ **Gagal menghapus postingan!**\n\n"
-                            f"Error: `{e}`\n\n"
-                            f"Pastikan:\n"
-                            f"• Message ID benar\n"
-                            f"• Bot adalah admin channel {PAP_CHANNEL}\n"
-                            f"• Postingan belum terlanjur dihapus manual",
+                            f"❌ **Gagal menghapus postingan!**\n\nError: `{e}`\n\n"
+                            f"Pastikan:\n• Message ID benar\n• Bot adalah admin channel {PAP_CHANNEL}\n• Postingan belum terlanjur dihapus manual",
                             parse_mode='md'
                         )
                 else:
                     await event.reply(
-                        "❌ Format salah!\n\n"
-                        "Gunakan: `/delpost <message_id>`\n\n"
-                        "Cara cari ID:\n"
-                        "1. Buka channel, klik kanan postingan\n"
-                        "2. Copy Link → ambil angka di akhir\n"
-                        "Contoh: `t.me/pap_clean/42` → `/delpost 42`"
+                        "❌ Format salah!\n\nGunakan: `/delpost <message_id>`\n\n"
+                        "Cara cari ID:\n1. Buka channel, klik kanan postingan\n"
+                        "2. Copy Link → ambil angka di akhir\nContoh: `t.me/pap_clean/42` → `/delpost 42`"
                     )
 
-            # ── BARU: /resetquota command ──
             elif is_admin and text.startswith("/resetquota"):
                 parts = text.split()
                 db = load_db()
-
                 if len(parts) < 2:
                     await event.reply(
                         "❌ Format salah!\n\nGunakan:\n"
@@ -1135,9 +1329,7 @@ def register_pap_handlers(bot: TelegramClient):
                         "`/resetquota all` — reset semua user"
                     )
                     return
-
                 target = parts[1].strip()
-
                 if target.lower() == "all":
                     count = 0
                     for uid in db["users"]:
@@ -1146,8 +1338,7 @@ def register_pap_handlers(bot: TelegramClient):
                         count += 1
                     save_db(db)
                     await event.reply(
-                        f"✅ **Kuota semua user berhasil di-reset!**\n\n"
-                        f"👥 Total user direset: `{count}`",
+                        f"✅ **Kuota semua user berhasil di-reset!**\n\n👥 Total user direset: `{count}`",
                         parse_mode='md', buttons=build_admin_menu()
                     )
                     logger.info(f"🔄 [PAP-ADMIN] Admin {user_id} reset kuota semua {count} user")
@@ -1155,25 +1346,18 @@ def register_pap_handlers(bot: TelegramClient):
                     try:
                         target_id = int(target)
                         get_user(db, target_id)
-                        update_user(db, target_id,
-                            daily_post_count=0,
-                            quota_reset_time=None
-                        )
-                        # Coba beritahu user
+                        update_user(db, target_id, daily_post_count=0, quota_reset_time=None)
                         try:
                             await bot.send_message(
                                 target_id,
-                                "🔄 **Kuota post kamu telah di-reset oleh admin!**\n\n"
-                                "Kamu bisa post lagi sekarang 🎉",
+                                "🔄 **Kuota post kamu telah di-reset oleh admin!**\n\nKamu bisa post lagi sekarang 🎉",
                                 parse_mode='md',
                                 buttons=build_main_menu(target_id, db)
                             )
                         except Exception:
                             pass
                         await event.reply(
-                            f"✅ **Kuota user berhasil di-reset!**\n\n"
-                            f"🆔 User ID: `{target_id}`\n"
-                            f"📊 Post count dikosongkan, timer dihapus.",
+                            f"✅ **Kuota user berhasil di-reset!**\n\n🆔 User ID: `{target_id}`\n📊 Post count dikosongkan, timer dihapus.",
                             parse_mode='md', buttons=build_admin_menu()
                         )
                         logger.info(f"🔄 [PAP-ADMIN] Admin {user_id} reset kuota user {target_id}")
@@ -1181,6 +1365,49 @@ def register_pap_handlers(bot: TelegramClient):
                         await event.reply("❌ User ID harus angka, atau gunakan `all` untuk semua user.")
                     except Exception as e:
                         await event.reply(f"❌ Error: `{e}`")
+
+            # ── BARU: /approvepap <pending_id> ──
+            elif is_admin and text.startswith("/approvepap "):
+                parts = text.split(None, 1)
+                if len(parts) < 2:
+                    await event.reply("❌ Format: `/approvepap <pending_id>`")
+                    return
+                pid = parts[1].strip()
+                success = await approve_pending_item(bot, pid)
+                if success:
+                    await event.reply(
+                        f"✅ **Konten berhasil di-approve!**\n\n"
+                        f"📌 Pending ID: `{pid}`\n"
+                        f"📥 Konten sudah masuk queue_free dan akan segera diposting.",
+                        parse_mode='md', buttons=build_admin_menu()
+                    )
+                else:
+                    await event.reply(
+                        f"❌ Pending ID `{pid}` tidak ditemukan. Mungkin sudah diproses.",
+                        parse_mode='md', buttons=build_admin_menu()
+                    )
+
+            # ── BARU: /rejectpap <pending_id> [alasan] ──
+            elif is_admin and text.startswith("/rejectpap "):
+                parts = text.split(None, 2)
+                if len(parts) < 2:
+                    await event.reply("❌ Format: `/rejectpap <pending_id>` atau `/rejectpap <pending_id> <alasan>`")
+                    return
+                pid = parts[1].strip()
+                reason = parts[2].strip() if len(parts) >= 3 else ""
+                success = await reject_pending_item(bot, pid, reason)
+                if success:
+                    await event.reply(
+                        f"❌ **Konten berhasil ditolak!**\n\n"
+                        f"📌 Pending ID: `{pid}`\n"
+                        f"📝 Alasan: `{reason or 'Tidak disebutkan'}`",
+                        parse_mode='md', buttons=build_admin_menu()
+                    )
+                else:
+                    await event.reply(
+                        f"❌ Pending ID `{pid}` tidak ditemukan. Mungkin sudah diproses.",
+                        parse_mode='md', buttons=build_admin_menu()
+                    )
 
             elif is_admin:
                 await bot.send_message(user_id, "🛠️ **Panel Admin**\nPilih menu:", parse_mode='md', buttons=build_admin_menu())
@@ -1194,6 +1421,7 @@ def register_pap_handlers(bot: TelegramClient):
             data = event.data
             user_id = event.sender_id
             db = load_db()
+            is_admin = user_id in ADMIN_IDS
 
             if data == b"check_join":
                 joined = await check_user_joined(bot, user_id)
@@ -1234,6 +1462,48 @@ def register_pap_handlers(bot: TelegramClient):
                     db["users"].get(str(user_id), {}).get("username"),
                     db
                 )
+
+            # ── BARU: Tombol Approve dari notif admin ──
+            elif data.startswith(b"pap_approve_") and is_admin:
+                pid = data.decode().replace("pap_approve_", "")
+                await event.answer("⏳ Memproses...", alert=False)
+                success = await approve_pending_item(bot, pid)
+                if success:
+                    try:
+                        await event.edit(
+                            (event.message.text or "") + "\n\n✅ **DISETUJUI** oleh admin.",
+                            parse_mode='md',
+                            buttons=None
+                        )
+                    except Exception:
+                        pass
+                    await event.answer("✅ Konten disetujui dan masuk antrian!", alert=False)
+                    logger.info(f"✅ [PAP-APPROVE-BTN] Admin {user_id} approve via tombol, pid={pid}")
+                else:
+                    await event.answer("❌ Pending ID tidak ditemukan / sudah diproses.", alert=True)
+
+            # ── BARU: Tombol Tolak dari notif admin ──
+            elif data.startswith(b"pap_reject_") and is_admin:
+                pid = data.decode().replace("pap_reject_", "")
+                await event.answer("⏳ Memproses...", alert=False)
+                success = await reject_pending_item(bot, pid)
+                if success:
+                    try:
+                        await event.edit(
+                            (event.message.text or "") + "\n\n❌ **DITOLAK** oleh admin.",
+                            parse_mode='md',
+                            buttons=None
+                        )
+                    except Exception:
+                        pass
+                    await event.answer("❌ Konten ditolak, user sudah dinotif.", alert=False)
+                    logger.info(f"❌ [PAP-REJECT-BTN] Admin {user_id} reject via tombol, pid={pid}")
+                else:
+                    await event.answer("❌ Pending ID tidak ditemukan / sudah diproses.", alert=True)
+
+            # ── Tombol Approve/Reject dari non-admin ──
+            elif data.startswith(b"pap_approve_") or data.startswith(b"pap_reject_"):
+                await event.answer("🚫 Kamu bukan admin!", alert=True)
 
         except Exception as e:
             logger.error(f"❌ [PAP-CALLBACK] {e}")
