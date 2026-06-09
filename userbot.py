@@ -1105,14 +1105,28 @@ async def kirim_warning_via_bot(user_id: int, nama: str, count: int):
         [Button.inline("🚫 Blokir User Ini Sekarang", data=f"block_{user_id}")],
         [Button.inline(f"⚠️ Peringatan {count} dari {DM_MAX_WARNING}", data="warn_info")],
     ]
+
+    # Resolve access_hash dari tele userbot yang sudah kenal user ini
+    # Bot clone tidak bisa kirim ke user yang belum pernah berinteraksi dengannya
+    from telethon.tl.types import InputPeerUser
+    try:
+        entity = await tele.get_input_entity(user_id)
+        access_hash = entity.access_hash
+    except Exception as e:
+        logger.warning(f"⚠️ [DM-WARNING] Gagal resolve entity dari tele: {e}")
+        return False
+
     for bot in bot_clients:
         try:
-            await bot.send_message(user_id, warning_text, buttons=buttons)
+            # Inject peer yang sudah dikenal ke session bot clone
+            peer = InputPeerUser(user_id=user_id, access_hash=access_hash)
+            await bot.send_message(peer, warning_text, buttons=buttons, parse_mode='md')
             logger.info(f"✅ [DM-WARNING] Bot clone berhasil kirim warning ke {nama} ({user_id})")
             return True
         except Exception as e:
             logger.warning(f"⚠️ [DM-WARNING] Bot clone gagal kirim ke {user_id}: {e}")
             continue
+
     logger.warning(f"⚠️ [DM-WARNING] Semua bot clone gagal. Fallback ke tele tanpa tombol.")
     return False
 
