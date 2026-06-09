@@ -78,7 +78,7 @@ DEFAULT_DB = {
     "settings": {
         "free_daily_limit": 3,
         "premium_daily_limit": 20,
-        "watermark_text": "@pap_clean",
+        "watermark_text": "@PAP_AUTOPOST",
         "post_interval_free": 60,
         "post_interval_premium": 10
     }
@@ -375,6 +375,8 @@ async def pap_send_stats(bot: TelegramClient, user_id: int, db: dict):
 
 async def pap_send_premium_info(bot: TelegramClient, user_id: int, db: dict):
     """Kirim info upgrade premium."""
+    first_admin = ADMIN_IDS[0] if ADMIN_IDS else None
+    admin_link = f"[Hubungi Admin](tg://user?id={first_admin})" if first_admin else "Hubungi Admin"
     text = (
         f"💎 **UPGRADE KE PREMIUM**\n\n"
         f"Dapatkan akses penuh dengan fitur eksklusif:\n\n"
@@ -387,11 +389,12 @@ async def pap_send_premium_info(bot: TelegramClient, user_id: int, db: dict):
         f"• 1 Bulan: Hubungi Admin\n"
         f"• 3 Bulan: Hubungi Admin\n"
         f"• Permanen: Hubungi Admin\n\n"
-        f"📩 Untuk pembelian, hubungi admin dengan menekan tombol di bawah."
+        f"📩 Untuk pembelian: {admin_link}"
     )
+    # Semua inline buttons — tidak boleh campur dengan Button.text
     buttons = [
-        [Button.url("📩 Hubungi Admin", f"https://t.me/{(await bot.get_me()).username}")],
-        [Button.text("🔙 Kembali")],
+        [Button.inline("📩 Hubungi Admin", data=b"contact_admin")],
+        [Button.inline("🔙 Kembali ke Menu", data=b"back_main_menu")],
     ]
     await bot.send_message(user_id, text, buttons=buttons, parse_mode='md')
 
@@ -955,6 +958,36 @@ def register_pap_handlers(bot: TelegramClient):
 
         except Exception as e:
             logger.error(f"❌ [PAP-HANDLER] {e}")
+
+    @bot.on(events.CallbackQuery())
+    async def pap_callback_handler(event):
+        try:
+            data = event.data
+            user_id = event.sender_id
+            db = load_db()
+
+            if data == b"contact_admin":
+                first_admin = ADMIN_IDS[0] if ADMIN_IDS else None
+                if first_admin:
+                    await event.answer(f"Silakan hubungi admin!", alert=False)
+                    await bot.send_message(
+                        user_id,
+                        f"📩 Hubungi admin untuk upgrade premium:\n[Klik di sini](tg://user?id={first_admin})",
+                        parse_mode='md',
+                        buttons=build_main_menu(user_id, db)
+                    )
+                else:
+                    await event.answer("Tidak ada admin yang terdaftar.", alert=True)
+
+            elif data == b"back_main_menu":
+                await event.answer()
+                await bot.send_message(
+                    user_id, "🏠 Menu Utama",
+                    buttons=build_main_menu(user_id, db)
+                )
+
+        except Exception as e:
+            logger.error(f"❌ [PAP-CALLBACK] {e}")
 
     logger.info("✅ [PAP] Semua handler PAP AUTOPOST terdaftar!")
 
