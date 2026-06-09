@@ -92,7 +92,6 @@ def load_db() -> dict:
     try:
         with open(DB_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
-        # Pastikan semua key ada (backward compat)
         for key in DEFAULT_DB:
             if key not in data:
                 data[key] = DEFAULT_DB[key]
@@ -109,7 +108,6 @@ def save_db(data: dict):
         logger.error(f"❌ [DB] Gagal save DB: {e}")
 
 def backup_db():
-    """Backup database ke folder backups/ dengan timestamp."""
     try:
         if not os.path.exists(DB_PATH):
             return
@@ -117,7 +115,6 @@ def backup_db():
         backup_path = os.path.join(BACKUP_DIR, f"pap_database_{timestamp}.json")
         shutil.copy2(DB_PATH, backup_path)
         logger.info(f"✅ [DB-BACKUP] Backup tersimpan: {backup_path}")
-        # Hapus backup lama (simpan 10 terakhir)
         backups = sorted([
             f for f in os.listdir(BACKUP_DIR) if f.startswith("pap_database_")
         ])
@@ -240,16 +237,13 @@ tele = TelegramClient(StringSession(TELE_SESS), API_ID, API_HASH)
 pyro = None
 call = None
 bot_clients = []
-pap_bot: TelegramClient = None  # Bot utama PAP AUTOPOST
+pap_bot: TelegramClient = None
 
 # ─────────────────────────────────────────────────────────
-# ═══════════════════════════════════════════════════════════
-#   PAP AUTOPOST SYSTEM
-# ═══════════════════════════════════════════════════════════
+# PAP AUTOPOST SYSTEM
 # ─────────────────────────────────────────────────────────
 
 def build_main_menu(user_id: int, db: dict) -> list:
-    """Keyboard menu utama PAP bot."""
     premium = is_premium(db, user_id)
     sisa = remaining_posts(db, user_id)
     badge = "💎 Premium" if premium else "🆓 Free"
@@ -260,7 +254,6 @@ def build_main_menu(user_id: int, db: dict) -> list:
     ]
 
 def build_admin_menu() -> list:
-    """Keyboard menu admin PAP bot."""
     return [
         [Button.text("👥 Daftar User"), Button.text("📊 Statistik Bot")],
         [Button.text("✅ Approve Premium"), Button.text("❌ Revoke Premium")],
@@ -270,11 +263,9 @@ def build_admin_menu() -> list:
     ]
 
 async def pap_send_welcome(bot: TelegramClient, user_id: int, user_name: str, username: str, db: dict):
-    """Kirim pesan selamat datang PAP bot."""
     premium = is_premium(db, user_id)
     badge = "💎 **PREMIUM**" if premium else "🆓 **FREE**"
     uname_display = f"@{username}" if username else "Tidak Ada"
-
     text = (
         f"✨ **SELAMAT DATANG DI PAP AUTOPOST** ✨\n\n"
         f"Halo **{user_name}** 👋\n\n"
@@ -290,14 +281,9 @@ async def pap_send_welcome(bot: TelegramClient, user_id: int, user_name: str, us
         f"⚠️ Sebelum menggunakan bot, harap pahami aturan dan cara penggunaan.\n"
         f"Silakan tekan tombol di bawah untuk memulai."
     )
-    await bot.send_message(
-        user_id, text,
-        buttons=build_main_menu(user_id, db),
-        parse_mode='md'
-    )
+    await bot.send_message(user_id, text, buttons=build_main_menu(user_id, db), parse_mode='md')
 
 async def pap_send_help(bot: TelegramClient, user_id: int, db: dict):
-    """Kirim panduan cara pakai."""
     sisa_free = db["settings"]["free_daily_limit"]
     sisa_prem = db["settings"]["premium_daily_limit"]
     wm = db["settings"]["watermark_text"]
@@ -329,7 +315,6 @@ async def pap_send_help(bot: TelegramClient, user_id: int, db: dict):
     await bot.send_message(user_id, text, buttons=build_main_menu(user_id, db), parse_mode='md')
 
 async def pap_send_profile(bot: TelegramClient, user_id: int, db: dict):
-    """Kirim info profil user."""
     user = get_user(db, user_id)
     premium = is_premium(db, user_id)
     reset_daily_if_needed(db, user_id)
@@ -337,7 +322,6 @@ async def pap_send_profile(bot: TelegramClient, user_id: int, db: dict):
     sisa = remaining_posts(db, user_id)
     limit = get_daily_limit(db, user_id)
     expiry_text = "Selamanya" if (premium and not user["premium_expiry"]) else (user["premium_expiry"][:10] if user["premium_expiry"] else "-")
-
     text = (
         f"👤 **PROFIL KAMU**\n\n"
         f"🏷️ Nama: **{user['display_name'] or 'Unknown'}**\n"
@@ -355,14 +339,12 @@ async def pap_send_profile(bot: TelegramClient, user_id: int, db: dict):
     await bot.send_message(user_id, text, buttons=build_main_menu(user_id, db), parse_mode='md')
 
 async def pap_send_stats(bot: TelegramClient, user_id: int, db: dict):
-    """Kirim statistik bot."""
     stats = db["stats"]
     total_users = len(db["users"])
     premium_count = sum(1 for u in db["users"].values() if u.get("is_premium"))
     free_count = total_users - premium_count
     q_free = len(db["queue_free"])
     q_prem = len(db["queue_premium"])
-
     text = (
         f"📊 **STATISTIK BOT PAP AUTOPOST**\n\n"
         f"👥 Total User: `{total_users}`\n"
@@ -374,10 +356,11 @@ async def pap_send_stats(bot: TelegramClient, user_id: int, db: dict):
     )
     await bot.send_message(user_id, text, buttons=build_main_menu(user_id, db), parse_mode='md')
 
+# ─── FIX: pap_send_premium_info — pakai Button.url langsung, bukan inline callback ───
 async def pap_send_premium_info(bot: TelegramClient, user_id: int, db: dict):
     """Kirim info upgrade premium."""
     first_admin = ADMIN_IDS[0] if ADMIN_IDS else None
-    admin_link = f"[Hubungi Admin](tg://user?id={first_admin})" if first_admin else "Hubungi Admin"
+
     text = (
         f"💎 **UPGRADE KE PREMIUM**\n\n"
         f"Dapatkan akses penuh dengan fitur eksklusif:\n\n"
@@ -390,20 +373,21 @@ async def pap_send_premium_info(bot: TelegramClient, user_id: int, db: dict):
         f"• 1 Bulan: Hubungi Admin\n"
         f"• 3 Bulan: Hubungi Admin\n"
         f"• Permanen: Hubungi Admin\n\n"
-        f"📩 Untuk pembelian: {admin_link}"
+        f"📩 Tekan tombol di bawah untuk menghubungi admin:"
     )
-    # Semua inline buttons — tidak boleh campur dengan Button.text
-    buttons = [
-        [Button.inline("📩 Hubungi Admin", data=b"contact_admin")],
-        [Button.inline("🔙 Kembali ke Menu", data=b"back_main_menu")],
-    ]
+
+    buttons = []
+    if first_admin:
+        # Button.url langsung buka chat admin — tidak perlu callback sama sekali
+        buttons.append([Button.url("📩 Hubungi Admin", f"tg://user?id={first_admin}")])
+    buttons.append([Button.text("🔙 Kembali")])
+
     await bot.send_message(user_id, text, buttons=buttons, parse_mode='md')
 
 # ─── State tracking untuk proses kirim PAP ───
-pap_waiting_media = {}  # {user_id: True/False}
+pap_waiting_media = {}
 
 async def check_user_joined(bot: TelegramClient, user_id: int) -> bool:
-    """Cek apakah user sudah join PAP_CHANNEL."""
     try:
         channel = PAP_CHANNEL.lstrip("@")
         participant = await bot(GetParticipantRequest(channel=channel, participant=user_id))
@@ -412,7 +396,6 @@ async def check_user_joined(bot: TelegramClient, user_id: int) -> bool:
         return False
 
 async def send_join_prompt(bot: TelegramClient, user_id: int):
-    """Minta user join channel dulu."""
     channel = PAP_CHANNEL.lstrip("@")
     await bot.send_message(
         user_id,
@@ -425,29 +408,20 @@ async def send_join_prompt(bot: TelegramClient, user_id: int):
         ]
     )
 
-
-
 async def process_pap_media(bot: TelegramClient, event, db: dict):
-    """Proses media yang dikirim user ke PAP bot."""
     user_id = event.sender_id
     sender = await event.get_sender()
     display_name = f"{sender.first_name or ''} {sender.last_name or ''}".strip()
     username = sender.username or None
 
-    # Update info user
-    update_user(db, user_id,
-        display_name=display_name,
-        username=username
-    )
+    update_user(db, user_id, display_name=display_name, username=username)
 
-    # Cek banned
     user = get_user(db, user_id)
     if user.get("is_banned"):
         await event.reply("🚫 Kamu telah di-ban dari bot ini. Hubungi admin jika ada kesalahan.")
         pap_waiting_media.pop(user_id, None)
         return
 
-    # Cek harus ada media
     if not event.message.media:
         await event.reply(
             "❌ Kirim **foto atau video** ya, bukan teks biasa!\n\n"
@@ -458,7 +432,6 @@ async def process_pap_media(bot: TelegramClient, event, db: dict):
 
     caption = event.message.message or ""
 
-    # Validasi hashtag
     if "#m" not in caption.lower() and "#f" not in caption.lower():
         await event.reply(
             "❌ **Wajib pakai hashtag!**\n\n"
@@ -467,7 +440,6 @@ async def process_pap_media(bot: TelegramClient, event, db: dict):
         )
         return
 
-    # Validasi link/username di caption
     if re.search(LINK_REGEX, caption, re.IGNORECASE) or re.search(MENTION_REGEX, caption):
         await event.reply(
             "❌ **Dilarang menyertakan link atau username di caption!**\n"
@@ -476,7 +448,6 @@ async def process_pap_media(bot: TelegramClient, event, db: dict):
         )
         return
 
-    # Cek limit harian
     if not can_post_today(db, user_id):
         limit = get_daily_limit(db, user_id)
         premium = is_premium(db, user_id)
@@ -497,7 +468,6 @@ async def process_pap_media(bot: TelegramClient, event, db: dict):
         pap_waiting_media.pop(user_id, None)
         return
 
-    # Tambah ke antrian
     premium = is_premium(db, user_id)
     queue_item = {
         "user_id": user_id,
@@ -530,8 +500,6 @@ async def process_pap_media(bot: TelegramClient, event, db: dict):
     logger.info(f"📥 [PAP-QUEUE] User {display_name} ({user_id}) masuk antrian {'premium' if premium else 'free'}")
 
 async def post_from_queue(bot: TelegramClient, db: dict):
-    """Ambil dari antrian dan post ke channel. Premium duluan."""
-    # Prioritas: premium dulu
     if db["queue_premium"]:
         item = db["queue_premium"].pop(0)
     elif db["queue_free"]:
@@ -546,24 +514,19 @@ async def post_from_queue(bot: TelegramClient, db: dict):
     chat_id = item["chat_id"]
 
     try:
-        # Ambil pesan asli dari chat user
         original_msg = await bot.get_messages(chat_id, ids=message_id)
         if not original_msg:
             logger.warning(f"⚠️ [PAP-POST] Pesan original tidak ditemukan untuk user {user_id}")
             save_db(db)
             return False
 
-        # Siapkan caption untuk channel
-        gender = "#f" if "#f" in caption.lower() else "#m"
         clean_caption = caption.strip()
 
         if not premium:
-            # Tambah watermark untuk free user
             wm = db["settings"]["watermark_text"]
             if wm not in clean_caption:
                 clean_caption = f"{clean_caption}\n\n{wm}"
 
-        # Forward/copy ke channel
         await bot.send_file(
             PAP_CHANNEL,
             file=original_msg.media,
@@ -571,7 +534,6 @@ async def post_from_queue(bot: TelegramClient, db: dict):
             parse_mode='md'
         )
 
-        # Update stats user
         reset_daily_if_needed(db, user_id)
         user = get_user(db, user_id)
         update_user(db, user_id,
@@ -581,7 +543,6 @@ async def post_from_queue(bot: TelegramClient, db: dict):
         db["stats"]["total_post"] = db["stats"].get("total_post", 0) + 1
         save_db(db)
 
-        # Notif ke user
         sisa = remaining_posts(db, user_id)
         await bot.send_message(
             user_id,
@@ -597,7 +558,6 @@ async def post_from_queue(bot: TelegramClient, db: dict):
 
     except Exception as e:
         logger.error(f"❌ [PAP-POST-ERROR] Gagal post untuk user {user_id}: {e}")
-        # Kembalikan ke antrian jika gagal
         if premium:
             db["queue_premium"].insert(0, item)
         else:
@@ -606,7 +566,6 @@ async def post_from_queue(bot: TelegramClient, db: dict):
         return False
 
 async def pap_queue_processor(bot: TelegramClient):
-    """Loop processor antrian PAP."""
     await asyncio.sleep(15)
     logger.info("🚀 [PAP-QUEUE] Queue processor aktif!")
     while True:
@@ -615,7 +574,6 @@ async def pap_queue_processor(bot: TelegramClient):
             if db["queue_premium"] or db["queue_free"]:
                 success = await post_from_queue(bot, db)
                 if success:
-                    # Interval berdasarkan tipe: premium lebih cepat
                     db = load_db()
                     interval = db["settings"]["post_interval_premium"] if db["queue_premium"] else db["settings"]["post_interval_free"]
                     await asyncio.sleep(interval)
@@ -628,16 +586,14 @@ async def pap_queue_processor(bot: TelegramClient):
             await asyncio.sleep(10)
 
 async def pap_backup_loop():
-    """Auto backup database setiap 1 jam."""
     while True:
         await asyncio.sleep(3600)
         backup_db()
 
 # ─────────────────────────────────────────────────────────
-# PAP BOT HANDLERS (Register ke pap_bot client)
+# PAP BOT HANDLERS
 # ─────────────────────────────────────────────────────────
 def register_pap_handlers(bot: TelegramClient):
-    """Daftarkan semua handler ke PAP bot."""
 
     @bot.on(events.NewMessage(pattern='/start', incoming=True, func=lambda e: e.is_private))
     async def pap_start(event):
@@ -655,7 +611,6 @@ def register_pap_handlers(bot: TelegramClient):
                 await event.reply("🚫 Akun kamu di-ban dari bot ini.")
                 raise events.StopPropagation
 
-            # Cek sudah join channel belum
             joined = await check_user_joined(bot, user_id)
             if not joined:
                 await send_join_prompt(bot, user_id)
@@ -678,7 +633,6 @@ def register_pap_handlers(bot: TelegramClient):
             text = event.raw_text.strip() if event.raw_text else ""
             is_admin = user_id in ADMIN_IDS
 
-            # Skip /start — sudah dihandle di atas
             if text == "/start":
                 return
 
@@ -744,13 +698,10 @@ def register_pap_handlers(bot: TelegramClient):
             elif text == "🔙 Kembali":
                 await bot.send_message(user_id, "🏠 Menu Utama", buttons=build_main_menu(user_id, db))
 
-            # ═══════════════════════════════════════
-            # ADMIN COMMANDS
-            # ═══════════════════════════════════════
+            # ═══ ADMIN COMMANDS ═══
             elif is_admin and text == "👥 Daftar User":
                 db = load_db()
                 total = len(db["users"])
-                premium_count = sum(1 for u in db["users"].values() if u.get("is_premium"))
                 lines = [f"👥 **DAFTAR USER** (Total: {total})\n"]
                 for uid, u in list(db["users"].items())[:30]:
                     badge = "💎" if u.get("is_premium") else "🆓"
@@ -768,8 +719,7 @@ def register_pap_handlers(bot: TelegramClient):
                     f"✅ **Backup berhasil!**\n\n"
                     f"📁 Total backup tersimpan: `{len(backups)}`\n"
                     f"🕐 Terakhir: `{backups[-1] if backups else '-'}`",
-                    parse_mode='md',
-                    buttons=build_admin_menu()
+                    parse_mode='md', buttons=build_admin_menu()
                 )
 
             elif is_admin and text == "✅ Approve Premium":
@@ -829,9 +779,7 @@ def register_pap_handlers(bot: TelegramClient):
                     parse_mode='md', buttons=build_admin_menu()
                 )
 
-            # ═══════════════════════════════════════
-            # ADMIN SLASH COMMANDS
-            # ═══════════════════════════════════════
+            # ═══ ADMIN SLASH COMMANDS ═══
             elif is_admin and text.startswith("/approve "):
                 parts = text.split()
                 if len(parts) >= 3:
@@ -986,12 +934,12 @@ def register_pap_handlers(bot: TelegramClient):
                     await event.reply("❌ Format: `/set <key> <value>`")
 
             elif is_admin:
-                # Admin dapat akses menu admin
                 await bot.send_message(user_id, "🛠️ **Panel Admin**\nPilih menu:", parse_mode='md', buttons=build_admin_menu())
 
         except Exception as e:
             logger.error(f"❌ [PAP-HANDLER] {e}")
 
+    # ─── FIX: callback handler — hapus contact_admin, cukup check_join & back_main_menu ───
     @bot.on(events.CallbackQuery())
     async def pap_callback_handler(event):
         try:
@@ -1000,7 +948,6 @@ def register_pap_handlers(bot: TelegramClient):
             db = load_db()
 
             if data == b"check_join":
-                # User klaim sudah join, verifikasi ulang
                 joined = await check_user_joined(bot, user_id)
                 if joined:
                     await event.answer("✅ Verifikasi berhasil!", alert=False)
@@ -1008,7 +955,6 @@ def register_pap_handlers(bot: TelegramClient):
                     display_name = f"{sender.first_name or ''} {sender.last_name or ''}".strip()
                     username = sender.username or None
                     update_user(db, user_id, display_name=display_name, username=username)
-                    # Hapus pesan lama lalu kirim welcome
                     try:
                         await event.delete()
                     except Exception:
@@ -1018,25 +964,7 @@ def register_pap_handlers(bot: TelegramClient):
                 else:
                     await event.answer("❌ Kamu belum join channel!", alert=True)
 
-            elif data == b"contact_admin":
-                first_admin = ADMIN_IDS[0] if ADMIN_IDS else None
-                if first_admin:
-                    await event.answer(f"Silakan hubungi admin!", alert=False)
-                    await bot.send_message(
-                        user_id,
-                        f"📩 Hubungi admin untuk upgrade premium:\n[Klik di sini](tg://user?id={first_admin})",
-                        parse_mode='md',
-                        buttons=build_main_menu(user_id, db)
-                    )
-                else:
-                    await event.answer("Tidak ada admin yang terdaftar.", alert=True)
-
-            elif data == b"back_main_menu":
-                await event.answer()
-                await bot.send_message(
-                    user_id, "🏠 Menu Utama",
-                    buttons=build_main_menu(user_id, db)
-                )
+            # contact_admin sudah tidak diperlukan — tombol pakai Button.url langsung
 
         except Exception as e:
             logger.error(f"❌ [PAP-CALLBACK] {e}")
@@ -1444,7 +1372,6 @@ async def admin_command_handler(event):
         return
     if not event.raw_text:
         return
-    # Tempat tambah command admin lain nanti
 
 # ─────────────────────────────────────────────────────────
 # HANDLER 7: Outgoing userbot commands (. prefix)
@@ -1706,7 +1633,6 @@ async def main():
             pap_bot = TelegramClient('pap_bot_session', API_ID, API_HASH)
             await pap_bot.start(bot_token=PAP_BOT_TOKEN)
             register_pap_handlers(pap_bot)
-            # Start queue processor & backup loop
             asyncio.create_task(pap_queue_processor(pap_bot))
             asyncio.create_task(pap_backup_loop())
             me_pap = await pap_bot.get_me()
