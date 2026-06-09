@@ -378,9 +378,9 @@ async def pap_send_premium_info(bot: TelegramClient, user_id: int, db: dict):
 
     buttons = []
     if first_admin:
-        # Button.url langsung buka chat admin — tidak perlu callback sama sekali
+        # Semua harus inline — tidak boleh campur Button.url dengan Button.text
         buttons.append([Button.url("📩 Hubungi Admin", f"tg://user?id={first_admin}")])
-    buttons.append([Button.text("🔙 Kembali")])
+    buttons.append([Button.inline("🔙 Kembali ke Menu", data=b"back_main_menu")])
 
     await bot.send_message(user_id, text, buttons=buttons, parse_mode='md')
 
@@ -397,13 +397,15 @@ async def check_user_joined(bot: TelegramClient, user_id: int) -> bool:
 
 async def send_join_prompt(bot: TelegramClient, user_id: int):
     channel = PAP_CHANNEL.lstrip("@")
+    # Semua harus inline — tidak boleh campur Button.url dengan Button.inline
     await bot.send_message(
         user_id,
         f"📢 Kamu wajib join channel terlebih dahulu sebelum menggunakan bot.\n\n"
-        f"Silakan join channel lalu tekan tombol **Sudah Join**.",
+        f"1. Tekan **Join Channel** di bawah\n"
+        f"2. Setelah join, tekan **Sudah Join** untuk verifikasi.",
         parse_mode='md',
         buttons=[
-            [Button.url("📢 Join Channel", f"https://t.me/{channel}")],
+            [Button.inline("📢 Join Channel", data=f"open_channel_{channel}".encode())],
             [Button.inline("✅ Sudah Join", data=b"check_join")],
         ]
     )
@@ -963,6 +965,23 @@ def register_pap_handlers(bot: TelegramClient):
                     logger.info(f"👤 [PAP-JOIN] User {display_name} ({user_id}) verified join channel")
                 else:
                     await event.answer("❌ Kamu belum join channel!", alert=True)
+
+            elif data.startswith(b"open_channel_"):
+                # Tombol join channel — arahkan user buka channel via answer
+                channel = data.decode().replace("open_channel_", "")
+                await event.answer(f"Buka Telegram dan join @{channel}", alert=True)
+
+            elif data == b"back_main_menu":
+                await event.answer()
+                try:
+                    await event.delete()
+                except Exception:
+                    pass
+                await pap_send_welcome(bot, user_id,
+                    db["users"].get(str(user_id), {}).get("display_name", "User"),
+                    db["users"].get(str(user_id), {}).get("username"),
+                    db
+                )
 
             # contact_admin sudah tidak diperlukan — tombol pakai Button.url langsung
 
