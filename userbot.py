@@ -379,7 +379,7 @@ async def pap_send_premium_info(bot: TelegramClient, user_id: int, db: dict):
     buttons = []
     if first_admin:
         # Semua harus inline — tidak boleh campur Button.url dengan Button.text
-        buttons.append([Button.url("📩 Hubungi Admin", f"tg://user?id={first_admin}")])
+        buttons.append([Button.url("📩 Hubungi Admin", f"https://t.me/+{first_admin}")])
     buttons.append([Button.inline("🔙 Kembali ke Menu", data=b"back_main_menu")])
 
     await bot.send_message(user_id, text, buttons=buttons, parse_mode='md')
