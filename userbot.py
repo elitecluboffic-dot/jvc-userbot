@@ -131,13 +131,17 @@ def get_user(db: dict, user_id: int) -> dict:
             "is_premium": False,
             "premium_expiry": None,
             "daily_post_count": 0,
-            "last_post_date": None,
+            # ── UPDATED: simpan timestamp ISO post pertama hari ini ──
+            "quota_reset_time": None,
             "total_posts": 0,
             "joined_at": datetime.now().isoformat(),
             "is_banned": False
         }
         db["stats"]["total_users"] += 1
         save_db(db)
+    # ── Migrasi user lama yang belum punya quota_reset_time ──
+    if "quota_reset_time" not in db["users"][uid]:
+        db["users"][uid]["quota_reset_time"] = None
     return db["users"][uid]
 
 def update_user(db: dict, user_id: int, **kwargs):
@@ -162,11 +166,61 @@ def get_daily_limit(db: dict, user_id: int) -> int:
         return db["settings"]["premium_daily_limit"]
     return db["settings"]["free_daily_limit"]
 
+# ─────────────────────────────────────────────────────────
+# ── UPDATED: Reset kuota 24 jam sejak post pertama ──
+# ─────────────────────────────────────────────────────────
 def reset_daily_if_needed(db: dict, user_id: int):
+    """
+    Kuota di-reset 24 jam setelah post pertama dilakukan.
+    Bukan midnight reset — tapi rolling 24 jam.
+    """
     user = get_user(db, user_id)
-    today = datetime.now().strftime("%Y-%m-%d")
-    if user["last_post_date"] != today:
-        update_user(db, user_id, daily_post_count=0, last_post_date=today)
+    reset_time_str = user.get("quota_reset_time")
+
+    if reset_time_str is None:
+        # Belum pernah post sama sekali, atau sudah di-reset
+        return
+
+    reset_time = datetime.fromisoformat(reset_time_str)
+    now = datetime.now()
+
+    if now >= reset_time:
+        # Sudah lewat 24 jam → reset kuota
+        update_user(db, user_id,
+            daily_post_count=0,
+            quota_reset_time=None
+        )
+        logger.info(f"🔄 [QUOTA-RESET] Kuota user {user_id} di-reset (24 jam terpenuhi)")
+
+def get_quota_reset_remaining(db: dict, user_id: int) -> str:
+    """
+    Kembalikan string sisa waktu sampai kuota reset.
+    Contoh: '5 jam 30 menit' atau '45 menit' atau '23 detik'
+    """
+    user = get_user(db, user_id)
+    reset_time_str = user.get("quota_reset_time")
+
+    if reset_time_str is None:
+        return "Sekarang"
+
+    reset_time = datetime.fromisoformat(reset_time_str)
+    now = datetime.now()
+    delta = reset_time - now
+
+    if delta.total_seconds() <= 0:
+        return "Sekarang"
+
+    total_seconds = int(delta.total_seconds())
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+
+    if hours > 0:
+        return f"{hours} jam {minutes} menit"
+    elif minutes > 0:
+        return f"{minutes} menit {seconds} detik"
+    else:
+        return f"{seconds} detik"
 
 def can_post_today(db: dict, user_id: int) -> bool:
     reset_daily_if_needed(db, user_id)
@@ -179,6 +233,28 @@ def remaining_posts(db: dict, user_id: int) -> int:
     user = get_user(db, user_id)
     limit = get_daily_limit(db, user_id)
     return max(0, limit - user["daily_post_count"])
+
+def record_post_usage(db: dict, user_id: int):
+    """
+    Catat 1 post dipakai. Kalau ini post pertama hari ini,
+    set quota_reset_time = sekarang + 24 jam.
+    """
+    reset_daily_if_needed(db, user_id)
+    user = get_user(db, user_id)
+    new_count = user["daily_post_count"] + 1
+
+    update_kwargs = {
+        "daily_post_count": new_count,
+        "total_posts": user["total_posts"] + 1
+    }
+
+    # Set reset time hanya saat post pertama (count sebelumnya = 0)
+    if user["daily_post_count"] == 0 or user.get("quota_reset_time") is None:
+        reset_at = (datetime.now() + timedelta(hours=24)).isoformat()
+        update_kwargs["quota_reset_time"] = reset_at
+        logger.info(f"⏰ [QUOTA] User {user_id} mulai kuota baru, reset dijadwalkan 24 jam lagi")
+
+    update_user(db, user_id, **update_kwargs)
 
 # ─────────────────────────────────────────────────────────
 # DM SPAM WARNING SYSTEM
@@ -251,7 +327,6 @@ def build_main_menu(user_id: int, db: dict) -> list:
         [Button.text("💎 Upgrade Premium"), Button.text("📋 Cara Pakai")],
     ]
 
-# ── UPDATE: tambah tombol 🗑️ Hapus Postingan di admin menu ──
 def build_admin_menu() -> list:
     return [
         [Button.text("👥 Daftar User"), Button.text("📊 Statistik Bot")],
@@ -259,7 +334,7 @@ def build_admin_menu() -> list:
         [Button.text("🚫 Ban User"), Button.text("✅ Unban User")],
         [Button.text("📤 Force Post"), Button.text("💾 Backup DB")],
         [Button.text("⚙️ Pengaturan"), Button.text("📢 Broadcast")],
-        [Button.text("🗑️ Hapus Postingan")],  # ← BARU
+        [Button.text("🗑️ Hapus Postingan"), Button.text("🔄 Reset Kuota User")],
     ]
 
 async def pap_send_welcome(bot: TelegramClient, user_id: int, user_name: str, username: str, db: dict):
@@ -296,14 +371,19 @@ async def pap_send_help(bot: TelegramClient, user_id: int, db: dict):
         f"4. Konten akan otomatis terposting ke {PAP_CHANNEL}\n\n"
         f"──────────────────────────\n"
         f"**🆓 User Free:**\n"
-        f"• {sisa_free}x post per hari\n"
+        f"• {sisa_free}x post per 24 jam\n"
         f"• Ada watermark `{wm}`\n"
         f"• Masuk antrian umum\n\n"
         f"**💎 User Premium:**\n"
-        f"• {sisa_prem}x post per hari\n"
+        f"• {sisa_prem}x post per 24 jam\n"
         f"• Tanpa watermark\n"
         f"• Antrian prioritas (lebih cepat)\n"
         f"• Post langsung tanpa antre\n\n"
+        f"──────────────────────────\n"
+        f"**⏰ Sistem Kuota:**\n"
+        f"• Kuota dihitung **24 jam** sejak post pertamamu\n"
+        f"• Bukan reset tengah malam, tapi rolling 24 jam\n"
+        f"• Cek sisa kuota di tombol **Kirim PAP** atau **Profil**\n\n"
         f"──────────────────────────\n"
         f"**⚠️ Larangan:**\n"
         f"• Dilarang spam / kirim berkali-kali\n"
@@ -318,10 +398,24 @@ async def pap_send_profile(bot: TelegramClient, user_id: int, db: dict):
     user = get_user(db, user_id)
     premium = is_premium(db, user_id)
     reset_daily_if_needed(db, user_id)
+    # Reload setelah mungkin di-reset
+    user = get_user(db, user_id)
     badge = "💎 Premium" if premium else "🆓 Free"
     sisa = remaining_posts(db, user_id)
     limit = get_daily_limit(db, user_id)
     expiry_text = "Selamanya" if (premium and not user["premium_expiry"]) else (user["premium_expiry"][:10] if user["premium_expiry"] else "-")
+
+    # Tampilkan info reset kuota
+    reset_time_str = user.get("quota_reset_time")
+    if reset_time_str and sisa == 0:
+        sisa_waktu = get_quota_reset_remaining(db, user_id)
+        quota_info = f"⏳ Kuota reset dalam: `{sisa_waktu}`"
+    elif reset_time_str:
+        sisa_waktu = get_quota_reset_remaining(db, user_id)
+        quota_info = f"🔄 Reset kuota dalam: `{sisa_waktu}`"
+    else:
+        quota_info = f"✅ Kuota belum dipakai hari ini"
+
     text = (
         f"👤 **PROFIL KAMU**\n\n"
         f"🏷️ Nama: **{user['display_name'] or 'Unknown'}**\n"
@@ -331,8 +425,9 @@ async def pap_send_profile(bot: TelegramClient, user_id: int, db: dict):
         f"──────────────────────────\n"
         f"📊 **STATISTIK POST:**\n"
         f"📤 Total Post: `{user['total_posts']}x`\n"
-        f"📅 Post Hari Ini: `{user['daily_post_count']}/{limit}`\n"
-        f"✅ Sisa Hari Ini: `{sisa}x`\n"
+        f"📅 Post Periode Ini: `{user['daily_post_count']}/{limit}`\n"
+        f"✅ Sisa Kuota: `{sisa}x`\n"
+        f"{quota_info}\n"
         f"📆 Bergabung: `{user['joined_at'][:10]}`\n"
         f"──────────────────────────"
     )
@@ -361,7 +456,7 @@ async def pap_send_premium_info(bot: TelegramClient, user_id: int, db: dict):
     text = (
         f"💎 **UPGRADE KE PREMIUM**\n\n"
         f"Dapatkan akses penuh dengan fitur eksklusif:\n\n"
-        f"✅ Post lebih banyak ({db['settings']['premium_daily_limit']}x/hari)\n"
+        f"✅ Post lebih banyak ({db['settings']['premium_daily_limit']}x/24 jam)\n"
         f"✅ Antrian prioritas (posting duluan)\n"
         f"✅ Tanpa watermark di konten\n"
         f"✅ Support langsung dari admin\n\n"
@@ -445,20 +540,26 @@ async def process_pap_media(bot: TelegramClient, event, db: dict):
         )
         return
 
+    # ── UPDATED: cek kuota dengan reset 24 jam ──
+    reset_daily_if_needed(db, user_id)
     if not can_post_today(db, user_id):
         limit = get_daily_limit(db, user_id)
         premium = is_premium(db, user_id)
+        sisa_waktu = get_quota_reset_remaining(db, user_id)
+
         if premium:
             await event.reply(
-                f"⏰ Limit harianmu habis!\n"
-                f"💎 Premium: {limit}x/hari\n"
-                f"Coba lagi besok ya.",
+                f"⏰ **Kuota harianmu habis!**\n\n"
+                f"💎 Premium limit: `{limit}x` per 24 jam\n"
+                f"🔄 Kuota reset dalam: **{sisa_waktu}**\n\n"
+                f"Sabar ya, sebentar lagi bisa post lagi!",
                 parse_mode='md'
             )
         else:
             await event.reply(
-                f"⏰ **Limit harian habis!** ({limit}x/hari untuk Free)\n\n"
-                f"💎 Upgrade ke **Premium** untuk post lebih banyak!\n"
+                f"⏰ **Kuota habis!** ({limit}x per 24 jam untuk Free)\n\n"
+                f"🔄 Kuota reset dalam: **{sisa_waktu}**\n\n"
+                f"💎 Atau upgrade ke **Premium** untuk post lebih banyak!\n"
                 f"Gunakan menu **Upgrade Premium** untuk info lebih lanjut.",
                 parse_mode='md'
             )
@@ -531,20 +632,32 @@ async def post_from_queue(bot: TelegramClient, db: dict):
             parse_mode='md'
         )
 
+        # ── UPDATED: pakai record_post_usage untuk tracking 24 jam ──
         reset_daily_if_needed(db, user_id)
-        user = get_user(db, user_id)
-        update_user(db, user_id,
-            daily_post_count=user["daily_post_count"] + 1,
-            total_posts=user["total_posts"] + 1
-        )
+        record_post_usage(db, user_id)
+
+        # Reload user setelah update
+        db = load_db()
+        sisa = remaining_posts(db, user_id)
         db["stats"]["total_post"] = db["stats"].get("total_post", 0) + 1
         save_db(db)
 
-        sisa = remaining_posts(db, user_id)
+        # Info reset waktu untuk notifikasi
+        user = get_user(db, user_id)
+        reset_info = ""
+        if sisa == 0:
+            sisa_waktu = get_quota_reset_remaining(db, user_id)
+            reset_info = f"\n⏰ Kuota reset dalam: **{sisa_waktu}**"
+        else:
+            sisa_waktu = get_quota_reset_remaining(db, user_id)
+            if sisa_waktu != "Sekarang":
+                reset_info = f"\n🔄 Reset kuota dalam: `{sisa_waktu}`"
+
         await bot.send_message(
             user_id,
             f"✅ **PAP kamu berhasil diposting ke {PAP_CHANNEL}!**\n\n"
-            f"📊 Sisa post hari ini: `{sisa}x`\n"
+            f"📊 Sisa kuota: `{sisa}x`"
+            f"{reset_info}\n"
             f"{'💎 Terima kasih sudah jadi member premium!' if premium else ''}",
             parse_mode='md',
             buttons=build_main_menu(user_id, db)
@@ -648,7 +761,7 @@ def register_pap_handlers(bot: TelegramClient):
                     "👥 Daftar User", "✅ Approve Premium", "❌ Revoke Premium",
                     "🚫 Ban User", "✅ Unban User", "📤 Force Post",
                     "💾 Backup DB", "⚙️ Pengaturan", "📢 Broadcast",
-                    "📊 Statistik Bot", "🗑️ Hapus Postingan"
+                    "📊 Statistik Bot", "🗑️ Hapus Postingan", "🔄 Reset Kuota User"
                 ]:
                     await process_pap_media(bot, event, db)
                     return
@@ -659,23 +772,41 @@ def register_pap_handlers(bot: TelegramClient):
                 if user.get("is_banned"):
                     await event.reply("🚫 Akun kamu di-ban.")
                     return
+
+                # Cek kuota dengan reset 24 jam
+                reset_daily_if_needed(db, user_id)
                 if not can_post_today(db, user_id):
-                    sisa = remaining_posts(db, user_id)
+                    limit = get_daily_limit(db, user_id)
+                    sisa_waktu = get_quota_reset_remaining(db, user_id)
                     await event.reply(
-                        f"⏰ Limit harian habis! Sisa: {sisa}x\n"
-                        f"Coba lagi besok atau upgrade premium.",
+                        f"⏰ **Kuota habis!**\n\n"
+                        f"📊 Limit: `{limit}x` per 24 jam\n"
+                        f"🔄 Kuota reset dalam: **{sisa_waktu}**\n\n"
+                        f"{'Sabar ya kak! ✨' if is_premium(db, user_id) else '💎 Atau upgrade Premium untuk post lebih banyak!'}",
+                        parse_mode='md',
                         buttons=build_main_menu(user_id, db)
                     )
                     return
+
                 premium = is_premium(db, user_id)
                 sisa = remaining_posts(db, user_id)
                 pap_waiting_media[user_id] = True
+
+                # Tampilkan info reset waktu
+                user_data = get_user(db, user_id)
+                reset_time_str = user_data.get("quota_reset_time")
+                reset_hint = ""
+                if reset_time_str:
+                    sisa_waktu = get_quota_reset_remaining(db, user_id)
+                    reset_hint = f"\n🔄 Reset kuota dalam: `{sisa_waktu}`"
+
                 await event.reply(
                     f"📤 **KIRIM PAP**\n\n"
                     f"Kirim foto atau video kamu sekarang.\n\n"
                     f"⚠️ **Wajib** sertakan hashtag **#m** atau **#f** di caption!\n"
                     f"{'💎 Kamu pakai antrian premium (prioritas)' if premium else '🆓 Kamu pakai antrian free'}\n"
-                    f"📊 Sisa post hari ini: **{sisa}x**\n\n"
+                    f"📊 Sisa kuota: **{sisa}x**"
+                    f"{reset_hint}\n\n"
                     f"Ketik **❌ Batal** untuk membatalkan.",
                     parse_mode='md',
                     buttons=[[Button.text("❌ Batal")]]
@@ -755,8 +886,8 @@ def register_pap_handlers(bot: TelegramClient):
                 s = db["settings"]
                 await event.reply(
                     f"⚙️ **PENGATURAN BOT**\n\n"
-                    f"🆓 Limit Free: `{s['free_daily_limit']}x/hari`\n"
-                    f"💎 Limit Premium: `{s['premium_daily_limit']}x/hari`\n"
+                    f"🆓 Limit Free: `{s['free_daily_limit']}x/24 jam`\n"
+                    f"💎 Limit Premium: `{s['premium_daily_limit']}x/24 jam`\n"
                     f"🏷️ Watermark: `{s['watermark_text']}`\n"
                     f"⏱️ Interval Free: `{s['post_interval_free']} detik`\n"
                     f"⏱️ Interval Premium: `{s['post_interval_premium']} detik`\n\n"
@@ -777,7 +908,6 @@ def register_pap_handlers(bot: TelegramClient):
                     parse_mode='md', buttons=build_admin_menu()
                 )
 
-            # ── UPDATE: tombol 🗑️ Hapus Postingan ──
             elif is_admin and text == "🗑️ Hapus Postingan":
                 await event.reply(
                     f"🗑️ **HAPUS POSTINGAN DARI CHANNEL**\n\n"
@@ -788,6 +918,19 @@ def register_pap_handlers(bot: TelegramClient):
                     f"3. Contoh link: `t.me/pap_clean/42` → ID-nya `42`\n\n"
                     f"Contoh penggunaan:\n`/delpost 42`\n\n"
                     f"⚠️ Hapus permanen, tidak bisa di-undo!",
+                    parse_mode='md', buttons=build_admin_menu()
+                )
+
+            # ── BARU: Reset Kuota User ──
+            elif is_admin and text == "🔄 Reset Kuota User":
+                await event.reply(
+                    f"🔄 **RESET KUOTA USER**\n\n"
+                    f"Gunakan command:\n`/resetquota <user_id>`\n\n"
+                    f"Untuk reset kuota semua user:\n`/resetquota all`\n\n"
+                    f"Contoh:\n"
+                    f"`/resetquota 123456789` — reset 1 user\n"
+                    f"`/resetquota all` — reset semua user\n\n"
+                    f"⚠️ Ini akan mengosongkan hitungan post dan menghapus timer reset kuota.",
                     parse_mode='md', buttons=build_admin_menu()
                 )
 
@@ -945,7 +1088,6 @@ def register_pap_handlers(bot: TelegramClient):
                 else:
                     await event.reply("❌ Format: `/set <key> <value>`")
 
-            # ── UPDATE: command /delpost untuk hapus postingan dari channel ──
             elif is_admin and text.startswith("/delpost "):
                 parts = text.split()
                 if len(parts) >= 2:
@@ -980,6 +1122,65 @@ def register_pap_handlers(bot: TelegramClient):
                         "2. Copy Link → ambil angka di akhir\n"
                         "Contoh: `t.me/pap_clean/42` → `/delpost 42`"
                     )
+
+            # ── BARU: /resetquota command ──
+            elif is_admin and text.startswith("/resetquota"):
+                parts = text.split()
+                db = load_db()
+
+                if len(parts) < 2:
+                    await event.reply(
+                        "❌ Format salah!\n\nGunakan:\n"
+                        "`/resetquota <user_id>` — reset 1 user\n"
+                        "`/resetquota all` — reset semua user"
+                    )
+                    return
+
+                target = parts[1].strip()
+
+                if target.lower() == "all":
+                    count = 0
+                    for uid in db["users"]:
+                        db["users"][uid]["daily_post_count"] = 0
+                        db["users"][uid]["quota_reset_time"] = None
+                        count += 1
+                    save_db(db)
+                    await event.reply(
+                        f"✅ **Kuota semua user berhasil di-reset!**\n\n"
+                        f"👥 Total user direset: `{count}`",
+                        parse_mode='md', buttons=build_admin_menu()
+                    )
+                    logger.info(f"🔄 [PAP-ADMIN] Admin {user_id} reset kuota semua {count} user")
+                else:
+                    try:
+                        target_id = int(target)
+                        get_user(db, target_id)
+                        update_user(db, target_id,
+                            daily_post_count=0,
+                            quota_reset_time=None
+                        )
+                        # Coba beritahu user
+                        try:
+                            await bot.send_message(
+                                target_id,
+                                "🔄 **Kuota post kamu telah di-reset oleh admin!**\n\n"
+                                "Kamu bisa post lagi sekarang 🎉",
+                                parse_mode='md',
+                                buttons=build_main_menu(target_id, db)
+                            )
+                        except Exception:
+                            pass
+                        await event.reply(
+                            f"✅ **Kuota user berhasil di-reset!**\n\n"
+                            f"🆔 User ID: `{target_id}`\n"
+                            f"📊 Post count dikosongkan, timer dihapus.",
+                            parse_mode='md', buttons=build_admin_menu()
+                        )
+                        logger.info(f"🔄 [PAP-ADMIN] Admin {user_id} reset kuota user {target_id}")
+                    except ValueError:
+                        await event.reply("❌ User ID harus angka, atau gunakan `all` untuk semua user.")
+                    except Exception as e:
+                        await event.reply(f"❌ Error: `{e}`")
 
             elif is_admin:
                 await bot.send_message(user_id, "🛠️ **Panel Admin**\nPilih menu:", parse_mode='md', buttons=build_admin_menu())
