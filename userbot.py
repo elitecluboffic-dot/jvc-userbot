@@ -36,6 +36,10 @@ BOT_TOKENS = [t.strip() for t in RAW_TOKENS.split(",") if t.strip()]
 ADMIN_IDS_RAW = os.getenv("ADMIN_IDS", "").strip()
 ADMIN_IDS = [int(x.strip()) for x in ADMIN_IDS_RAW.split(",") if x.strip().isdigit()]
 
+# Username admin untuk tombol Hubungi Admin (tanpa @)
+# Contoh: ADMIN_USERNAME=namaadmin
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "").strip().lstrip("@")
+
 # PAP BOT TOKEN (token utama untuk bot PAP AUTOPOST)
 PAP_BOT_TOKEN = os.getenv("PAP_BOT_TOKEN", "").strip()
 
@@ -377,9 +381,11 @@ async def pap_send_premium_info(bot: TelegramClient, user_id: int, db: dict):
     )
 
     buttons = []
-    if first_admin:
-        # Semua harus inline — tidak boleh campur Button.url dengan Button.text
-        buttons.append([Button.url("📩 Hubungi Admin", f"https://t.me/+{first_admin}")])
+    if ADMIN_USERNAME:
+        buttons.append([Button.url("📩 Hubungi Admin", f"https://t.me/{ADMIN_USERNAME}")])
+    elif first_admin:
+        # Fallback: kalau tidak ada username, minta user cari manual
+        buttons.append([Button.inline("📩 Info Admin", data=b"show_admin_id")])
     buttons.append([Button.inline("🔙 Kembali ke Menu", data=b"back_main_menu")])
 
     await bot.send_message(user_id, text, buttons=buttons, parse_mode='md')
@@ -965,6 +971,13 @@ def register_pap_handlers(bot: TelegramClient):
                     logger.info(f"👤 [PAP-JOIN] User {display_name} ({user_id}) verified join channel")
                 else:
                     await event.answer("❌ Kamu belum join channel!", alert=True)
+
+            elif data == b"show_admin_id":
+                first_admin = ADMIN_IDS[0] if ADMIN_IDS else None
+                if first_admin:
+                    await event.answer(f"ID Admin: {first_admin}\nCari manual di Telegram.", alert=True)
+                else:
+                    await event.answer("Tidak ada admin terdaftar.", alert=True)
 
             elif data.startswith(b"open_channel_"):
                 # Tombol join channel — arahkan user buka channel via answer
