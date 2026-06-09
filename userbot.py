@@ -36,14 +36,8 @@ BOT_TOKENS = [t.strip() for t in RAW_TOKENS.split(",") if t.strip()]
 ADMIN_IDS_RAW = os.getenv("ADMIN_IDS", "").strip()
 ADMIN_IDS = [int(x.strip()) for x in ADMIN_IDS_RAW.split(",") if x.strip().isdigit()]
 
-# Username admin untuk tombol Hubungi Admin (tanpa @)
-# Contoh: ADMIN_USERNAME=namaadmin
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "").strip().lstrip("@")
-
-# PAP BOT TOKEN (token utama untuk bot PAP AUTOPOST)
 PAP_BOT_TOKEN = os.getenv("PAP_BOT_TOKEN", "").strip()
-
-# Channel tujuan post PAP
 PAP_CHANNEL = os.getenv("PAP_CHANNEL", "@pap_clean").strip()
 
 TARGET_GROUP_ID = "@CARI_CRUSH_ONLINE"
@@ -257,6 +251,7 @@ def build_main_menu(user_id: int, db: dict) -> list:
         [Button.text("💎 Upgrade Premium"), Button.text("📋 Cara Pakai")],
     ]
 
+# ── UPDATE: tambah tombol 🗑️ Hapus Postingan di admin menu ──
 def build_admin_menu() -> list:
     return [
         [Button.text("👥 Daftar User"), Button.text("📊 Statistik Bot")],
@@ -264,6 +259,7 @@ def build_admin_menu() -> list:
         [Button.text("🚫 Ban User"), Button.text("✅ Unban User")],
         [Button.text("📤 Force Post"), Button.text("💾 Backup DB")],
         [Button.text("⚙️ Pengaturan"), Button.text("📢 Broadcast")],
+        [Button.text("🗑️ Hapus Postingan")],  # ← BARU
     ]
 
 async def pap_send_welcome(bot: TelegramClient, user_id: int, user_name: str, username: str, db: dict):
@@ -360,11 +356,8 @@ async def pap_send_stats(bot: TelegramClient, user_id: int, db: dict):
     )
     await bot.send_message(user_id, text, buttons=build_main_menu(user_id, db), parse_mode='md')
 
-# ─── FIX: pap_send_premium_info — pakai Button.url langsung, bukan inline callback ───
 async def pap_send_premium_info(bot: TelegramClient, user_id: int, db: dict):
-    """Kirim info upgrade premium."""
     first_admin = ADMIN_IDS[0] if ADMIN_IDS else None
-
     text = (
         f"💎 **UPGRADE KE PREMIUM**\n\n"
         f"Dapatkan akses penuh dengan fitur eksklusif:\n\n"
@@ -379,15 +372,12 @@ async def pap_send_premium_info(bot: TelegramClient, user_id: int, db: dict):
         f"• Permanen: Hubungi Admin\n\n"
         f"📩 Tekan tombol di bawah untuk menghubungi admin:"
     )
-
     buttons = []
     if ADMIN_USERNAME:
         buttons.append([Button.url("📩 Hubungi Admin", f"https://t.me/{ADMIN_USERNAME}")])
     elif first_admin:
-        # Fallback: kalau tidak ada username, minta user cari manual
         buttons.append([Button.inline("📩 Info Admin", data=b"show_admin_id")])
     buttons.append([Button.inline("🔙 Kembali ke Menu", data=b"back_main_menu")])
-
     await bot.send_message(user_id, text, buttons=buttons, parse_mode='md')
 
 # ─── State tracking untuk proses kirim PAP ───
@@ -403,7 +393,6 @@ async def check_user_joined(bot: TelegramClient, user_id: int) -> bool:
 
 async def send_join_prompt(bot: TelegramClient, user_id: int):
     channel = PAP_CHANNEL.lstrip("@")
-    # Semua harus inline — tidak boleh campur Button.url dengan Button.inline
     await bot.send_message(
         user_id,
         f"📢 Kamu wajib join channel terlebih dahulu sebelum menggunakan bot.\n\n"
@@ -658,7 +647,8 @@ def register_pap_handlers(bot: TelegramClient):
                     "💎 Upgrade Premium", "📋 Cara Pakai", "🔙 Kembali",
                     "👥 Daftar User", "✅ Approve Premium", "❌ Revoke Premium",
                     "🚫 Ban User", "✅ Unban User", "📤 Force Post",
-                    "💾 Backup DB", "⚙️ Pengaturan", "📢 Broadcast", "📊 Statistik Bot"
+                    "💾 Backup DB", "⚙️ Pengaturan", "📢 Broadcast",
+                    "📊 Statistik Bot", "🗑️ Hapus Postingan"
                 ]:
                     await process_pap_media(bot, event, db)
                     return
@@ -784,6 +774,20 @@ def register_pap_handlers(bot: TelegramClient):
                     f"└ 💎 Premium: `{len(db['queue_premium'])}`\n"
                     f"└ 🆓 Free: `{len(db['queue_free'])}`\n\n"
                     f"Gunakan `/forcepost` untuk memproses antrian sekarang.",
+                    parse_mode='md', buttons=build_admin_menu()
+                )
+
+            # ── UPDATE: tombol 🗑️ Hapus Postingan ──
+            elif is_admin and text == "🗑️ Hapus Postingan":
+                await event.reply(
+                    f"🗑️ **HAPUS POSTINGAN DARI CHANNEL**\n\n"
+                    f"Gunakan command:\n`/delpost <message_id>`\n\n"
+                    f"**Cara cari message_id:**\n"
+                    f"1. Buka channel {PAP_CHANNEL}\n"
+                    f"2. Klik kanan postingan → **Copy Link**\n"
+                    f"3. Contoh link: `t.me/pap_clean/42` → ID-nya `42`\n\n"
+                    f"Contoh penggunaan:\n`/delpost 42`\n\n"
+                    f"⚠️ Hapus permanen, tidak bisa di-undo!",
                     parse_mode='md', buttons=build_admin_menu()
                 )
 
@@ -941,13 +945,48 @@ def register_pap_handlers(bot: TelegramClient):
                 else:
                     await event.reply("❌ Format: `/set <key> <value>`")
 
+            # ── UPDATE: command /delpost untuk hapus postingan dari channel ──
+            elif is_admin and text.startswith("/delpost "):
+                parts = text.split()
+                if len(parts) >= 2:
+                    try:
+                        msg_id = int(parts[1])
+                        await bot.delete_messages(PAP_CHANNEL, msg_id)
+                        await event.reply(
+                            f"✅ **Postingan berhasil dihapus!**\n\n"
+                            f"🗑️ Message ID: `{msg_id}`\n"
+                            f"📢 Channel: {PAP_CHANNEL}",
+                            parse_mode='md', buttons=build_admin_menu()
+                        )
+                        logger.info(f"🗑️ [PAP-DEL] Admin {user_id} hapus msg_id={msg_id} dari {PAP_CHANNEL}")
+                    except ValueError:
+                        await event.reply("❌ Message ID harus berupa angka.\nContoh: `/delpost 42`")
+                    except Exception as e:
+                        await event.reply(
+                            f"❌ **Gagal menghapus postingan!**\n\n"
+                            f"Error: `{e}`\n\n"
+                            f"Pastikan:\n"
+                            f"• Message ID benar\n"
+                            f"• Bot adalah admin channel {PAP_CHANNEL}\n"
+                            f"• Postingan belum terlanjur dihapus manual",
+                            parse_mode='md'
+                        )
+                else:
+                    await event.reply(
+                        "❌ Format salah!\n\n"
+                        "Gunakan: `/delpost <message_id>`\n\n"
+                        "Cara cari ID:\n"
+                        "1. Buka channel, klik kanan postingan\n"
+                        "2. Copy Link → ambil angka di akhir\n"
+                        "Contoh: `t.me/pap_clean/42` → `/delpost 42`"
+                    )
+
             elif is_admin:
                 await bot.send_message(user_id, "🛠️ **Panel Admin**\nPilih menu:", parse_mode='md', buttons=build_admin_menu())
 
         except Exception as e:
             logger.error(f"❌ [PAP-HANDLER] {e}")
 
-    # ─── FIX: callback handler — hapus contact_admin, cukup check_join & back_main_menu ───
     @bot.on(events.CallbackQuery())
     async def pap_callback_handler(event):
         try:
@@ -980,7 +1019,6 @@ def register_pap_handlers(bot: TelegramClient):
                     await event.answer("Tidak ada admin terdaftar.", alert=True)
 
             elif data.startswith(b"open_channel_"):
-                # Tombol join channel — arahkan user buka channel via answer
                 channel = data.decode().replace("open_channel_", "")
                 await event.answer(f"Buka Telegram dan join @{channel}", alert=True)
 
@@ -995,8 +1033,6 @@ def register_pap_handlers(bot: TelegramClient):
                     db["users"].get(str(user_id), {}).get("username"),
                     db
                 )
-
-            # contact_admin sudah tidak diperlukan — tombol pakai Button.url langsung
 
         except Exception as e:
             logger.error(f"❌ [PAP-CALLBACK] {e}")
@@ -1106,8 +1142,6 @@ async def kirim_warning_via_bot(user_id: int, nama: str, count: int):
         [Button.inline(f"⚠️ Peringatan {count} dari {DM_MAX_WARNING}", data="warn_info")],
     ]
 
-    # Resolve access_hash dari tele userbot yang sudah kenal user ini
-    # Bot clone tidak bisa kirim ke user yang belum pernah berinteraksi dengannya
     from telethon.tl.types import InputPeerUser
     try:
         entity = await tele.get_input_entity(user_id)
@@ -1118,7 +1152,6 @@ async def kirim_warning_via_bot(user_id: int, nama: str, count: int):
 
     for bot in bot_clients:
         try:
-            # Inject peer yang sudah dikenal ke session bot clone
             peer = InputPeerUser(user_id=user_id, access_hash=access_hash)
             await bot.send_message(peer, warning_text, buttons=buttons, parse_mode='md')
             logger.info(f"✅ [DM-WARNING] Bot clone berhasil kirim warning ke {nama} ({user_id})")
