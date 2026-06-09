@@ -12,6 +12,7 @@ from telethon.sessions import StringSession
 from telethon.tl.functions.users import GetFullUserRequest
 from telethon.tl.functions.messages import SetTypingRequest
 from telethon.tl.functions.contacts import BlockRequest
+from telethon.tl.functions.channels import GetParticipantRequest
 from telethon.tl.types import SendMessageTypingAction, User, MessageActionChatAddUser, MessageActionChatJoinedByLink, MessageActionChatJoinedByRequest
 from telethon.tl.custom import Button
 from telethon.errors import FloodWaitError
@@ -401,6 +402,31 @@ async def pap_send_premium_info(bot: TelegramClient, user_id: int, db: dict):
 # ─── State tracking untuk proses kirim PAP ───
 pap_waiting_media = {}  # {user_id: True/False}
 
+async def check_user_joined(bot: TelegramClient, user_id: int) -> bool:
+    """Cek apakah user sudah join PAP_CHANNEL."""
+    try:
+        channel = PAP_CHANNEL.lstrip("@")
+        participant = await bot(GetParticipantRequest(channel=channel, participant=user_id))
+        return participant is not None
+    except Exception:
+        return False
+
+async def send_join_prompt(bot: TelegramClient, user_id: int):
+    """Minta user join channel dulu."""
+    channel = PAP_CHANNEL.lstrip("@")
+    await bot.send_message(
+        user_id,
+        f"📢 Kamu wajib join channel terlebih dahulu sebelum menggunakan bot.\n\n"
+        f"Silakan join channel lalu tekan tombol **Sudah Join**.",
+        parse_mode='md',
+        buttons=[
+            [Button.url("📢 Join Channel", f"https://t.me/{channel}")],
+            [Button.inline("✅ Sudah Join", data=b"check_join")],
+        ]
+    )
+
+
+
 async def process_pap_media(bot: TelegramClient, event, db: dict):
     """Proses media yang dikirim user ke PAP bot."""
     user_id = event.sender_id
@@ -627,6 +653,13 @@ def register_pap_handlers(bot: TelegramClient):
 
             if user.get("is_banned"):
                 await event.reply("🚫 Akun kamu di-ban dari bot ini.")
+                raise events.StopPropagation
+
+            # Cek sudah join channel belum
+            joined = await check_user_joined(bot, user_id)
+            if not joined:
+                await send_join_prompt(bot, user_id)
+                logger.info(f"👤 [PAP-START] User {display_name} ({user_id}) belum join channel")
                 raise events.StopPropagation
 
             await pap_send_welcome(bot, user_id, display_name, username, db)
@@ -966,7 +999,26 @@ def register_pap_handlers(bot: TelegramClient):
             user_id = event.sender_id
             db = load_db()
 
-            if data == b"contact_admin":
+            if data == b"check_join":
+                # User klaim sudah join, verifikasi ulang
+                joined = await check_user_joined(bot, user_id)
+                if joined:
+                    await event.answer("✅ Verifikasi berhasil!", alert=False)
+                    sender = await event.get_sender()
+                    display_name = f"{sender.first_name or ''} {sender.last_name or ''}".strip()
+                    username = sender.username or None
+                    update_user(db, user_id, display_name=display_name, username=username)
+                    # Hapus pesan lama lalu kirim welcome
+                    try:
+                        await event.delete()
+                    except Exception:
+                        pass
+                    await pap_send_welcome(bot, user_id, display_name, username, db)
+                    logger.info(f"👤 [PAP-JOIN] User {display_name} ({user_id}) verified join channel")
+                else:
+                    await event.answer("❌ Kamu belum join channel!", alert=True)
+
+            elif data == b"contact_admin":
                 first_admin = ADMIN_IDS[0] if ADMIN_IDS else None
                 if first_admin:
                     await event.answer(f"Silakan hubungi admin!", alert=False)
