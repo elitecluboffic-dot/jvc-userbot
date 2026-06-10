@@ -50,6 +50,13 @@ last_welcome_msg_id = None
 _welcome_lock = asyncio.Lock()
 
 # ─────────────────────────────────────────────────────────
+# USERNAME WHITELIST (bot yang tidak boleh difilter)
+# ─────────────────────────────────────────────────────────
+USERNAME_WHITELIST = [
+    "fallenbeatzbot",
+]
+
+# ─────────────────────────────────────────────────────────
 # LOGGING
 # ─────────────────────────────────────────────────────────
 logging.basicConfig(format="%(asctime)s | %(levelname)s | %(message)s", level=logging.INFO)
@@ -1899,6 +1906,8 @@ async def auto_blacklist_gcast_handler(event):
             return
 
         user_uname = sender.username.lower() if sender.username else ""
+        if user_uname in USERNAME_WHITELIST:
+            return
         if any(x in user_uname for x in ["http", "t.me", ".com", ".net", ".id", ".org", "bot"]):
             await event.delete()
             logger.info(f"🗑️ [USERNAME-BL] Pesan dari {sender.first_name} dihapus karena username mengandung link/bot!")
