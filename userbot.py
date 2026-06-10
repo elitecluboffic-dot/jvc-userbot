@@ -54,7 +54,7 @@ _welcome_lock = asyncio.Lock()
 # ─────────────────────────────────────────────────────────
 USERNAME_WHITELIST = [
     "fallenbeatzbot",
-    "Familys100_bot",
+    "familys100_bot",
 ]
 
 # ─────────────────────────────────────────────────────────
